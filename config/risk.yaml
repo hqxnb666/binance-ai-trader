@@ -1,0 +1,20 @@
+risk:
+  max_single_trade_risk_pct: 0.5
+  max_daily_loss_pct: 2.0
+  max_position_pct_per_symbol: 10.0
+  max_total_position_pct: 30.0
+  max_consecutive_losses: 3
+  cooldown_minutes_per_symbol: 10
+  block_on_ws_disconnect: true
+  block_on_ai_schema_error: true
+  block_on_data_delay_seconds: 3
+  allow_market_orders: false
+  allow_limit_orders: true
+  kill_switch_enabled: false
+  max_orders_per_minute: 6
+
+live_trading:
+  enabled: false
+  require_manual_enable: true
+  require_env_live_enabled: true
+

@@ -1,0 +1,14 @@
+symbols:
+  - symbol: BTCUSDT
+    enabled: true
+    base_asset: BTC
+    quote_asset: USDT
+  - symbol: ETHUSDT
+    enabled: true
+    base_asset: ETH
+    quote_asset: USDT
+
+timeframes:
+  entry: 5m
+  trend: 1h
+

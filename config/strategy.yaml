@@ -1,0 +1,14 @@
+ema_trend:
+  enabled: true
+  entry_timeframe: 5m
+  trend_timeframe: 1h
+  ema_fast: 20
+  ema_slow: 60
+  rsi_period: 14
+  rsi_min: 45
+  rsi_max: 70
+  atr_period: 14
+  volume_ratio_min: 1.1
+  take_profit_r_multiple: 2.0
+  stop_loss_atr_multiple: 1.5
+
