@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "binance-ai-trader"
-version = "0.2.2"
+version = "0.3.0"
 description = "Binance Global Spot Testnet AI-assisted trading bot MVP"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -45,6 +45,7 @@ packages = [
   "backtest",
   "diagnostics",
   "data_quality",
+  "shadow",
 ]
 
 [tool.setuptools.package-data]

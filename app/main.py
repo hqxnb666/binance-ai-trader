@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
         await app.state.runtime_manager.stop_testnet()
 
 
-app = FastAPI(title="Binance AI Trader MVP", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Binance AI Trader MVP", version="0.3.0", lifespan=lifespan)
 app.include_router(router)
 
 

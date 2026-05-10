@@ -384,6 +384,37 @@ async def runtime_data_quality_check(
     return await manager.run_data_quality_check()
 
 
+@router.get("/runtime/shadow/recent")
+def runtime_shadow_recent(
+    limit: int = 50,
+    manager: RuntimeTaskManager = Depends(runtime_manager),
+) -> list[dict[str, object]]:
+    return manager.shadow_recent(limit)
+
+
+@router.get("/runtime/shadow/open")
+def runtime_shadow_open(
+    limit: int = 50,
+    manager: RuntimeTaskManager = Depends(runtime_manager),
+) -> list[dict[str, object]]:
+    return manager.shadow_open(limit)
+
+
+@router.get("/runtime/shadow/report")
+def runtime_shadow_report(
+    hours: int = 24,
+    manager: RuntimeTaskManager = Depends(runtime_manager),
+) -> dict[str, object]:
+    return manager.shadow_report(hours)
+
+
+@router.post("/runtime/shadow/evaluate")
+async def runtime_shadow_evaluate(
+    manager: RuntimeTaskManager = Depends(runtime_manager),
+) -> dict[str, object]:
+    return await manager.run_shadow_evaluation()
+
+
 def _audit_row(row: PipelineAudit) -> dict[str, object]:
     return {
         "id": row.id,

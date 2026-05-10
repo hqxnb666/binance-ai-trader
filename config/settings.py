@@ -204,6 +204,17 @@ class Settings(BaseModel):
     data_quality_require_account_state_for_real_order: bool = True
     data_quality_require_position_state_for_real_order: bool = True
     data_quality_report_dir: str = "reports/data_quality"
+    enable_shadow_mode: bool = True
+    shadow_mode_record_rejected_signals: bool = True
+    shadow_mode_record_approved_only: bool = False
+    shadow_mode_simulated_hold_minutes: int = 60
+    shadow_mode_evaluation_interval_minutes: int = 5
+    shadow_mode_max_open_shadow_trades: int = 50
+    shadow_mode_report_dir: str = "reports/shadow"
+    shadow_mode_default_exit_policy: str = "time_based"
+    shadow_mode_track_mfe_mae: bool = True
+    shadow_mode_allow_when_dry_run: bool = True
+    shadow_mode_disable_when_real_order_enabled: bool = True
     openai_daily_budget_usd: float = 1.0
     openai_monthly_budget_usd: float = 20.0
     openai_strategy_daily_call_limit: int = 24
@@ -326,6 +337,21 @@ class Settings(BaseModel):
                     self.data_quality_require_position_state_for_real_order
                 ),
                 "report_dir": self.data_quality_report_dir,
+            },
+            "shadow_mode": {
+                "enabled": self.enable_shadow_mode,
+                "record_rejected_signals": self.shadow_mode_record_rejected_signals,
+                "record_approved_only": self.shadow_mode_record_approved_only,
+                "simulated_hold_minutes": self.shadow_mode_simulated_hold_minutes,
+                "evaluation_interval_minutes": self.shadow_mode_evaluation_interval_minutes,
+                "max_open_shadow_trades": self.shadow_mode_max_open_shadow_trades,
+                "report_dir": self.shadow_mode_report_dir,
+                "default_exit_policy": self.shadow_mode_default_exit_policy,
+                "track_mfe_mae": self.shadow_mode_track_mfe_mae,
+                "allow_when_dry_run": self.shadow_mode_allow_when_dry_run,
+                "disable_when_real_order_enabled": (
+                    self.shadow_mode_disable_when_real_order_enabled
+                ),
             },
             "symbols": self.symbols.model_dump(),
             "risk": self.risk_config.model_dump(),
@@ -451,6 +477,25 @@ def load_settings(base_dir: Path = BASE_DIR) -> Settings:
             "DATA_QUALITY_REQUIRE_POSITION_STATE_FOR_REAL_ORDER", True
         ),
         data_quality_report_dir=_env_str("DATA_QUALITY_REPORT_DIR", "reports/data_quality"),
+        enable_shadow_mode=_env_bool("ENABLE_SHADOW_MODE", True),
+        shadow_mode_record_rejected_signals=_env_bool(
+            "SHADOW_MODE_RECORD_REJECTED_SIGNALS", True
+        ),
+        shadow_mode_record_approved_only=_env_bool("SHADOW_MODE_RECORD_APPROVED_ONLY", False),
+        shadow_mode_simulated_hold_minutes=_env_int("SHADOW_MODE_SIMULATED_HOLD_MINUTES", 60),
+        shadow_mode_evaluation_interval_minutes=_env_int(
+            "SHADOW_MODE_EVALUATION_INTERVAL_MINUTES", 5
+        ),
+        shadow_mode_max_open_shadow_trades=_env_int("SHADOW_MODE_MAX_OPEN_SHADOW_TRADES", 50),
+        shadow_mode_report_dir=_env_str("SHADOW_MODE_REPORT_DIR", "reports/shadow"),
+        shadow_mode_default_exit_policy=_env_str(
+            "SHADOW_MODE_DEFAULT_EXIT_POLICY", "time_based"
+        ),
+        shadow_mode_track_mfe_mae=_env_bool("SHADOW_MODE_TRACK_MFE_MAE", True),
+        shadow_mode_allow_when_dry_run=_env_bool("SHADOW_MODE_ALLOW_WHEN_DRY_RUN", True),
+        shadow_mode_disable_when_real_order_enabled=_env_bool(
+            "SHADOW_MODE_DISABLE_WHEN_REAL_ORDER_ENABLED", True
+        ),
         openai_daily_budget_usd=_env_float("OPENAI_DAILY_BUDGET_USD", 1.0),
         openai_monthly_budget_usd=_env_float("OPENAI_MONTHLY_BUDGET_USD", 20.0),
         openai_strategy_daily_call_limit=_env_int("OPENAI_STRATEGY_DAILY_CALL_LIMIT", 24),

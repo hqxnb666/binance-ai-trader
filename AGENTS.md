@@ -92,6 +92,14 @@ This repository is a trading system. Treat safety controls as production-critica
     and `POST /api/v3/order/test`; they must never call real `POST /api/v3/order`.
 74. Do not log or store API secrets, full signed query strings, or raw signatures in reports.
 75. Error `-1022` must fail closed and block Testnet order readiness until signed diagnostics pass.
+76. Shadow Mode must remain simulation-only; it must never call `broker.place_order`,
+    `broker.test_order`, `broker.cancel_order`, or Binance `new_order`.
+77. Shadow Mode must not change RiskEngine, DataQualityGate, OrderManager, kill-switch, dry-run, or
+    order-execution behavior.
+78. Shadow PnL reports are simulated observations, not account PnL or profit promises.
+79. Spot `SELL` shadow decisions must not be modeled as naked shorts without owned inventory.
+80. Shadow reports in `reports/shadow/*.json` must not be committed.
+81. Shadow schema, store, evaluator, runtime, API, or script changes must add or update tests.
 
 Default assumption: this project is Testnet-only unless a human deliberately enables Live mode
 through both environment variables and checked configuration.

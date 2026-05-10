@@ -11,6 +11,13 @@ from config.settings import Settings
 from data_quality.gate import DataQualityGate
 from runtime.daemon_state import DaemonState
 from runtime.trading_daemon import TestnetTradingDaemon
+from shadow.evaluator import ShadowModeEvaluator
+from shadow.store import (
+    build_shadow_report,
+    list_open_shadow_decisions,
+    list_recent_shadow_decisions,
+    shadow_decision_to_dict,
+)
 
 DaemonFactory = Callable[..., TestnetTradingDaemon]
 
@@ -113,6 +120,7 @@ class RuntimeTaskManager:
                     "runtime_enabled": False,
                     "effective_enabled": self.settings.risk_config.kill_switch_enabled,
                 },
+                "shadow_status": self._stopped_shadow_status(),
             }
         return self.daemon.health().model_dump(mode="json")
 
@@ -177,6 +185,32 @@ class RuntimeTaskManager:
             return self.daemon.latest_data_quality_snapshot.model_dump(mode="json")
         return {"status": "NO_DATA_QUALITY_SNAPSHOT"}
 
+    async def run_shadow_evaluation(self) -> dict[str, Any]:
+        if self.daemon is not None:
+            return await self.daemon.run_shadow_evaluation_once()
+        with self.session_factory() as session:
+            evaluations = ShadowModeEvaluator(self.settings).evaluate_open_decisions(session)
+            session.commit()
+        return {"evaluated": len(evaluations), "evaluations": evaluations}
+
+    def shadow_recent(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.session_factory() as session:
+            return [
+                shadow_decision_to_dict(record)
+                for record in list_recent_shadow_decisions(session, limit=limit)
+            ]
+
+    def shadow_open(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.session_factory() as session:
+            return [
+                shadow_decision_to_dict(record)
+                for record in list_open_shadow_decisions(session, limit=limit)
+            ]
+
+    def shadow_report(self, hours: int = 24) -> dict[str, Any]:
+        with self.session_factory() as session:
+            return build_shadow_report(session, hours=hours).model_dump(mode="json")
+
     def _stopped_data_quality_status(self) -> dict[str, Any]:
         return {
             "enabled": self.settings.enable_data_quality_gate,
@@ -187,4 +221,15 @@ class RuntimeTaskManager:
             "safe_for_real_testnet_order": False,
             "issue_count": 0,
             "latest_created_at": None,
+        }
+
+    def _stopped_shadow_status(self) -> dict[str, Any]:
+        return {
+            "enabled": self.settings.enable_shadow_mode,
+            "open_shadow_decisions": 0,
+            "recent_shadow_decisions": 0,
+            "last_shadow_evaluation_at": None,
+            "simulated_total_pnl_usdt": "0",
+            "simulated_win_rate": None,
+            "latest_report_created_at": None,
         }

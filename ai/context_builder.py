@@ -183,6 +183,7 @@ def build_audit_context(
     account_position_snapshot: dict[str, Any] | None = None,
     kill_switch_state: dict[str, Any] | None = None,
     risk_engine_runtime_state: dict[str, Any] | None = None,
+    shadow_summary: dict[str, Any] | None = None,
     account_state: dict[str, Any] | None = None,
     position_state: dict[str, Any] | None = None,
     diagnostics_summary: dict[str, Any] | None = None,
@@ -243,6 +244,7 @@ def build_audit_context(
             "position_state": position_state or _unknown_position(),
             "kill_switch_state": kill_switch_state or {"status": "unknown"},
             "risk_engine_runtime_state": risk_engine_runtime_state or {"status": "unknown"},
+            "shadow_summary": _compact_shadow_summary(shadow_summary),
             "security_guardrails": {
                 "live_trading_enabled": (
                     settings.live_trading_enabled and settings.live_trading.enabled
@@ -589,5 +591,25 @@ def _compact_account_position_snapshot(snapshot: dict[str, Any] | None) -> dict[
                 "is_safe_for_real_order": account.get("is_safe_for_real_order"),
             },
             "positions": compact_positions,
+        }
+    )
+
+
+def _compact_shadow_summary(summary: dict[str, Any] | None) -> dict[str, Any]:
+    if not summary:
+        return {"status": "unknown"}
+    return _sanitize_json(
+        {
+            "total_decisions": summary.get("total_decisions"),
+            "would_place_order_count": summary.get("would_place_order_count"),
+            "risk_rejected_count": summary.get("risk_rejected_count"),
+            "ai_rejected_count": summary.get("ai_rejected_count"),
+            "data_quality_blocked_count": summary.get("data_quality_blocked_count"),
+            "simulated_total_pnl_usdt": summary.get("simulated_total_pnl_usdt"),
+            "simulated_win_rate": summary.get("simulated_win_rate"),
+            "top_rejection_reasons": _truncate_list(
+                list(summary.get("top_rejection_reasons", [])),
+                10,
+            ),
         }
     )

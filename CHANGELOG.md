@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.3.0 - Shadow mode readiness and simulated PnL reporting
+
+- Added Shadow Mode records for would-place orders and blocked/rejected signal paths.
+- Added simulated Shadow PnL evaluation with MFE/MAE tracking and time-based exits.
+- Added shadow report and evaluation scripts plus runtime/API shadow summaries.
+- Added shadow report directory protections so generated JSON stays out of Git.
+- No Live settings, order execution defaults, broker permissions, or RiskEngine gates were relaxed.
+
 ## v0.2.2 - CI smoke test isolation fix
 
 - Fixed the smoke-test stage unit test so it mocks network diagnostics and does not depend on

@@ -67,6 +67,14 @@ from risk.position_sizer import PositionSizer
 from risk.risk_engine import AccountState, MarketHealth, PositionState, RiskEngine
 from runtime.daemon_state import DaemonState, RuntimeLogBuffer
 from runtime.health import RuntimeHealth
+from shadow.evaluator import ShadowModeEvaluator
+from shadow.recorder import ShadowModeRecorder
+from shadow.schemas import ShadowDecisionType
+from shadow.store import (
+    build_shadow_report,
+    list_open_shadow_decisions,
+    list_recent_shadow_decisions,
+)
 from strategies.ema_trend import EmaTrendStrategy
 
 logger = logging.getLogger(__name__)
@@ -101,6 +109,8 @@ class TestnetTradingDaemon:
         self.strategy_planner = StrategyPlanner(settings)
         self.system_auditor = SystemAuditor(settings)
         self.data_quality_gate = DataQualityGate(settings)
+        self.shadow_recorder = ShadowModeRecorder(settings)
+        self.shadow_evaluator = ShadowModeEvaluator(settings)
         self.strategy = EmaTrendStrategy(settings.strategy.ema_trend)
         self.poll_interval_seconds = poll_interval_seconds
         self.reconciliation_interval_seconds = reconciliation_interval_seconds
@@ -143,6 +153,7 @@ class TestnetTradingDaemon:
         self.latest_account_state: RuntimeAccountState | None = None
         self.latest_position_states: dict[str, RuntimePositionState] = {}
         self.latest_account_position_snapshot: AccountPositionSnapshot | None = None
+        self.last_shadow_evaluation_at: datetime | None = None
 
     async def start(self) -> dict[str, Any]:
         if self.state in {DaemonState.STARTING, DaemonState.RUNNING}:
@@ -172,6 +183,12 @@ class TestnetTradingDaemon:
             self.tasks.append(
                 asyncio.create_task(
                     self._task_wrapper("system_auditor", self._system_auditor_worker())
+                )
+            )
+        if self.settings.enable_shadow_mode:
+            self.tasks.append(
+                asyncio.create_task(
+                    self._task_wrapper("shadow_evaluator", self._shadow_evaluator_worker())
                 )
             )
         if self.user_stream is not None:
@@ -234,6 +251,7 @@ class TestnetTradingDaemon:
             account_position_status=self._account_position_status(),
             risk_runtime_status=self._risk_runtime_status(),
             kill_switch_state=self._kill_switch_state(),
+            shadow_status=self._shadow_status(),
             health_warning=health_warning,
         )
 
@@ -432,6 +450,35 @@ class TestnetTradingDaemon:
                 self._log("system_audit_failed", level="WARNING", error=str(exc))
             await self._sleep_until_stop(self.settings.system_audit_interval_minutes * 60)
 
+    async def _shadow_evaluator_worker(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                await self.run_shadow_evaluation_once()
+            except Exception as exc:  # noqa: BLE001 - shadow eval must not stop daemon
+                self._log("shadow_evaluation_failed", level="WARNING", error=str(exc))
+            await self._sleep_until_stop(
+                max(self.settings.shadow_mode_evaluation_interval_minutes, 1) * 60
+            )
+
+    async def run_shadow_evaluation_once(self) -> dict[str, Any]:
+        def _run() -> dict[str, Any]:
+            current_prices = {
+                symbol: Decimal(str(snapshot["price"]))
+                for symbol, snapshot in self.last_snapshots.items()
+                if snapshot.get("price") is not None
+            }
+            with self.session_factory() as session:
+                evaluations = self.shadow_evaluator.evaluate_open_decisions(
+                    session,
+                    current_prices=current_prices,
+                )
+                session.commit()
+            self.last_shadow_evaluation_at = datetime.now(UTC)
+            self._log("shadow_evaluation_completed", evaluated=len(evaluations))
+            return {"evaluated": len(evaluations), "evaluations": evaluations}
+
+        return await asyncio.to_thread(_run)
+
     async def run_system_audit_once(
         self,
         *,
@@ -555,6 +602,19 @@ class TestnetTradingDaemon:
                     status=PipelineStatus.OK,
                     raw_context_json={"snapshot": snapshot, "signal": None},
                 )
+                self._record_shadow(
+                    session,
+                    decision_type=ShadowDecisionType.STRATEGY_NO_TRADE,
+                    symbol=symbol,
+                    side="HOLD",
+                    reason="Strategy generated no trade candidate.",
+                    reason_codes=["STRATEGY_NO_TRADE"],
+                    context_summary={
+                        "strategy_name": self.strategy.name,
+                        "data_quality_status": dq_snapshot.overall_status.value,
+                        "price_source": "market_snapshot",
+                    },
+                )
                 session.commit()
             return
         with self.session_factory() as session:
@@ -622,6 +682,22 @@ class TestnetTradingDaemon:
                     }
                 )
                 self.last_ai_reviews = self.last_ai_reviews[-20:]
+                self._record_shadow(
+                    session,
+                    decision_type=ShadowDecisionType.DATA_QUALITY_BLOCKED,
+                    symbol=symbol,
+                    side=signal.side,
+                    reason="SignalReview blocked by DataQualityGate.",
+                    reason_codes=["DATA_QUALITY_BLOCKED", *dq_snapshot.reason_codes],
+                    signal_review_id=ai_record.id,
+                    data_quality_snapshot_id=run_id,
+                    context_summary={
+                        "strategy_name": signal.strategy_name,
+                        "signal_type": signal.signal_type,
+                        "data_quality_status": dq_snapshot.overall_status.value,
+                        "notes": dq_snapshot.reason_codes[:5],
+                    },
+                )
                 self._log(
                     "data_quality_blocked_signal_review",
                     level="WARNING",
@@ -692,6 +768,27 @@ class TestnetTradingDaemon:
                 }
             )
             self.last_ai_reviews = self.last_ai_reviews[-20:]
+            if not ai_result.approved_for_risk:
+                decision_type = (
+                    ShadowDecisionType.BUDGET_BLOCKED
+                    if ai_result.reason == "BUDGET_GUARD_BLOCKED"
+                    else ShadowDecisionType.AI_REJECTED
+                )
+                self._record_shadow(
+                    session,
+                    decision_type=decision_type,
+                    symbol=symbol,
+                    side=signal.side,
+                    reason=ai_result.reason,
+                    reason_codes=[ai_result.reason or "AI_REJECTED"],
+                    signal_review_id=ai_record.id,
+                    context_summary={
+                        "strategy_name": signal.strategy_name,
+                        "signal_type": signal.signal_type,
+                        "ai_decision": ai_result.review.decision.value,
+                        "data_quality_status": dq_snapshot.overall_status.value,
+                    },
+                )
             await self._risk_and_order(
                 session=session,
                 symbol=symbol,
@@ -718,6 +815,20 @@ class TestnetTradingDaemon:
     ) -> None:
         filters = self.exchange_filters.get(symbol)
         if filters is None:
+            self._record_shadow(
+                session,
+                decision_type=ShadowDecisionType.RISK_REJECTED,
+                symbol=symbol,
+                side=signal.side,
+                reason="missing filters",
+                reason_codes=["MISSING_EXCHANGE_FILTERS"],
+                signal_review_id=ai_record.id,
+                context_summary={
+                    "strategy_name": signal.strategy_name,
+                    "signal_type": signal.signal_type,
+                    "risk_reason": "missing filters",
+                },
+            )
             self._log("risk_rejected", level="WARNING", symbol=symbol, reason="missing filters")
             return
         runtime_kill_switch_enabled = CircuitBreaker(session).is_enabled()
@@ -763,6 +874,21 @@ class TestnetTradingDaemon:
                 raw_context_json={"snapshot": snapshot},
             )
             self._record_risk_decision(risk_record)
+            self._record_shadow(
+                session,
+                decision_type=ShadowDecisionType.RISK_REJECTED,
+                symbol=symbol,
+                side=signal.side,
+                reason=risk_record.reason,
+                reason_codes=["POSITION_SIZING_FAILED"],
+                signal_review_id=ai_record.id,
+                risk_decision_id=risk_record.id,
+                context_summary={
+                    "strategy_name": signal.strategy_name,
+                    "signal_type": signal.signal_type,
+                    "risk_reason": risk_record.reason,
+                },
+            )
             self._log("risk_rejected", level="WARNING", symbol=symbol, reason=risk_record.reason)
             return
         market_health = self._risk_market_health()
@@ -811,6 +937,22 @@ class TestnetTradingDaemon:
             reason=decision.reason,
         )
         if not decision.approved:
+            if ai_result.approved_for_risk:
+                self._record_shadow(
+                    session,
+                    decision_type=ShadowDecisionType.RISK_REJECTED,
+                    symbol=symbol,
+                    side=signal.side,
+                    reason=decision.reason,
+                    reason_codes=[decision.reason or "RISK_REJECTED"],
+                    signal_review_id=ai_record.id,
+                    risk_decision_id=risk_record.id,
+                    context_summary={
+                        "strategy_name": signal.strategy_name,
+                        "signal_type": signal.signal_type,
+                        "risk_reason": decision.reason,
+                    },
+                )
             return
         order_quality = self.data_quality_gate.evaluate_order_preconditions(
             symbol=symbol,
@@ -848,6 +990,23 @@ class TestnetTradingDaemon:
                 symbol=symbol,
                 reason_codes=order_quality.reason_codes,
             )
+            self._record_shadow(
+                session,
+                decision_type=ShadowDecisionType.DATA_QUALITY_BLOCKED,
+                symbol=symbol,
+                side=signal.side,
+                reason="Order path blocked by DataQualityGate.",
+                reason_codes=["DATA_QUALITY_BLOCKED", *order_quality.reason_codes],
+                signal_review_id=ai_record.id,
+                risk_decision_id=risk_record.id,
+                data_quality_snapshot_id=run_id,
+                context_summary={
+                    "strategy_name": signal.strategy_name,
+                    "signal_type": signal.signal_type,
+                    "data_quality_status": order_quality.overall_status.value,
+                    "notes": order_quality.reason_codes[:5],
+                },
+            )
             return
         manager = OrderManager(broker=self.broker, session=session, trading_mode="testnet")
         order_record = await manager.submit_order(
@@ -878,6 +1037,30 @@ class TestnetTradingDaemon:
             order_record_id=order_record.id,
             raw_context_json={"order_status": order_record.status, "dry_run": self.dry_run},
         )
+        if self.dry_run or not self.order_execution_enabled:
+            self._record_shadow(
+                session,
+                decision_type=ShadowDecisionType.WOULD_PLACE_ORDER,
+                symbol=symbol,
+                side=signal.side,
+                reason="RiskEngine approved and OrderManager created a dry-run order record.",
+                reason_codes=["WOULD_PLACE_ORDER", order_record.status],
+                signal_review_id=ai_record.id,
+                risk_decision_id=risk_record.id,
+                order_type=order_record.order_type,
+                simulated_entry_price=order_record.price,
+                simulated_quantity=order_record.quantity,
+                simulated_notional=(
+                    (order_record.price or Decimal("0")) * order_record.quantity
+                ),
+                context_summary={
+                    "strategy_name": signal.strategy_name,
+                    "signal_type": signal.signal_type,
+                    "ai_decision": ai_result.review.decision.value,
+                    "risk_reason": risk_record.reason,
+                    "price_source": "sized_order",
+                },
+            )
 
     def _build_user_stream(self) -> UserDataStreamClient | None:
         if (
@@ -1038,6 +1221,53 @@ class TestnetTradingDaemon:
         )
         self.last_risk_decisions = self.last_risk_decisions[-20:]
 
+    def _record_shadow(
+        self,
+        session: Session,
+        *,
+        decision_type: ShadowDecisionType,
+        symbol: str,
+        side: str,
+        reason: str,
+        reason_codes: list[str] | None = None,
+        context_summary: dict[str, Any] | None = None,
+        signal_review_id: int | str | None = None,
+        risk_decision_id: int | str | None = None,
+        data_quality_snapshot_id: int | str | None = None,
+        order_type: str | None = None,
+        simulated_entry_price: Decimal | str | None = None,
+        simulated_quantity: Decimal | str | None = None,
+        simulated_notional: Decimal | str | None = None,
+    ) -> None:
+        try:
+            record = self.shadow_recorder.record(
+                session,
+                decision_type=decision_type,
+                symbol=symbol,
+                side=side,
+                reason=reason,
+                reason_codes=reason_codes,
+                context_summary=context_summary,
+                signal_review_id=signal_review_id,
+                risk_decision_id=risk_decision_id,
+                data_quality_snapshot_id=data_quality_snapshot_id,
+                order_type=order_type,
+                simulated_entry_price=simulated_entry_price,
+                simulated_quantity=simulated_quantity,
+                simulated_notional=simulated_notional,
+                dry_run=self.dry_run,
+                order_execution_enabled=self.order_execution_enabled,
+            )
+            if record is not None:
+                self._log(
+                    "shadow_decision_recorded",
+                    symbol=symbol,
+                    decision_type=decision_type.value,
+                    shadow_id=record.shadow_id,
+                )
+        except Exception as exc:  # noqa: BLE001 - shadow mode must not alter trading path
+            self._log("shadow_record_failed", level="WARNING", symbol=symbol, error=str(exc))
+
     def _log(self, event: str, *, level: str = "INFO", **payload: Any) -> None:
         self.logs.append(event, level=level, **payload)
         log_fn: Callable[..., None] = logger.warning if level == "WARNING" else logger.info
@@ -1108,6 +1338,52 @@ class TestnetTradingDaemon:
             "safe_for_real_order": snapshot.safe_for_real_order,
             "latest_created_at": snapshot.created_at.isoformat(),
             "reason_codes": snapshot.reason_codes,
+        }
+
+    def _shadow_status(self) -> dict[str, Any]:
+        try:
+            with self.session_factory() as session:
+                open_decisions = list_open_shadow_decisions(session, limit=100)
+                recent_decisions = list_recent_shadow_decisions(session, limit=25)
+                report = build_shadow_report(session, hours=24)
+                return {
+                    "enabled": self.settings.enable_shadow_mode,
+                    "open_shadow_decisions": len(open_decisions),
+                    "recent_shadow_decisions": len(recent_decisions),
+                    "last_shadow_evaluation_at": self.last_shadow_evaluation_at.isoformat()
+                    if self.last_shadow_evaluation_at
+                    else None,
+                    "simulated_total_pnl_usdt": report.simulated_total_pnl_usdt,
+                    "simulated_win_rate": report.simulated_win_rate,
+                    "latest_report_created_at": report.created_at.isoformat(),
+                }
+        except Exception as exc:  # noqa: BLE001 - health should stay available
+            return {
+                "enabled": self.settings.enable_shadow_mode,
+                "open_shadow_decisions": 0,
+                "recent_shadow_decisions": 0,
+                "last_shadow_evaluation_at": self.last_shadow_evaluation_at.isoformat()
+                if self.last_shadow_evaluation_at
+                else None,
+                "simulated_total_pnl_usdt": "0",
+                "simulated_win_rate": None,
+                "latest_report_created_at": None,
+                "warning": type(exc).__name__,
+            }
+
+    def _shadow_summary_for_audit(self, session: Session) -> dict[str, Any]:
+        report = build_shadow_report(session, hours=24)
+        return {
+            "total_decisions": report.total_decisions,
+            "would_place_order_count": report.would_place_order_count,
+            "risk_rejected_count": report.risk_rejected_count,
+            "ai_rejected_count": report.ai_rejected_count,
+            "data_quality_blocked_count": report.data_quality_blocked_count,
+            "simulated_total_pnl_usdt": report.simulated_total_pnl_usdt,
+            "simulated_win_rate": report.simulated_win_rate,
+            "top_rejection_reasons": [
+                item.model_dump(mode="json") for item in report.top_rejection_reasons
+            ],
         }
 
     def _evaluate_data_quality_runtime(
@@ -1309,6 +1585,7 @@ class TestnetTradingDaemon:
             else None,
             kill_switch_state=self._kill_switch_state(),
             risk_engine_runtime_state=self._risk_runtime_status(),
+            shadow_summary=self._shadow_summary_for_audit(session),
             account_state=_account_context(self.latest_account_state),
             position_state={
                 "positions": _position_contexts(

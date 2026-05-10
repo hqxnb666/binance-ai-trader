@@ -18,6 +18,7 @@ reports/**/*.csv
 reports/audits/*.json
 reports/data_quality/*.json
 reports/readiness/*.json
+reports/shadow/*.json
 !reports/README.md
 !reports/audits/
 !reports/audits/README.md
@@ -25,3 +26,5 @@ reports/readiness/*.json
 !reports/data_quality/README.md
 !reports/readiness/
 !reports/readiness/README.md
+!reports/shadow/
+!reports/shadow/README.md

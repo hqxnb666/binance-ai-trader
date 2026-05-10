@@ -451,6 +451,43 @@ not enter the matching engine and does not create a real order. The script never
 Do not paste API keys, API secrets, full signed query strings, or generated JSON reports into issue
 trackers or prompts. Real diagnostics reports under `reports/diagnostics/*.json` are ignored by git.
 
+## Shadow Mode
+
+Shadow Mode is a dry-run observation layer. It records what would have happened after
+StrategySignal, SignalReview, DataQualityGate, and RiskEngine finish, but it never submits,
+cancels, or modifies real Binance orders.
+
+It records `WOULD_PLACE_ORDER` only when the runtime reached the order path in dry-run or with
+`ORDER_EXECUTION_ENABLED=false`. It records `AI_REJECTED`, `RISK_REJECTED`,
+`DATA_QUALITY_BLOCKED`, `STRATEGY_NO_TRADE`, and `BUDGET_BLOCKED` for blocked paths when configured.
+These records are for diagnosis only and do not bypass RiskEngine, DataQualityGate, or OrderManager.
+
+Run one-time evaluation and reports:
+
+```powershell
+python scripts/evaluate_shadow_mode.py --once --json
+python scripts/shadow_report.py --hours 24 --json
+python scripts/shadow_report.py --hours 24 --save-report
+```
+
+Shadow PnL is simulated from later market prices:
+`BUY PnL = (current_price - simulated_entry_price) * simulated_quantity`.
+MFE and MAE are tracked for observed favorable/adverse movement. Spot `SELL` without known owned
+inventory is invalidated rather than treated as a short. Shadow PnL is not account PnL and is not a
+profit promise.
+
+Runtime endpoints:
+
+```text
+GET  /runtime/shadow/recent
+GET  /runtime/shadow/open
+GET  /runtime/shadow/report
+POST /runtime/shadow/evaluate
+```
+
+Generated reports live under `reports/shadow/` and are ignored by git. The recommended next step
+before a small Testnet lifecycle test is to run Shadow Mode for 24-72 hours and inspect the report.
+
 ## Tests
 
 ```powershell

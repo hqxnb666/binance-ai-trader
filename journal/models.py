@@ -271,3 +271,51 @@ class TradingIssueReportRecord(Base):
     raw_output_json_sanitized: Mapped[dict[str, Any]] = mapped_column(JSON)
     summary: Mapped[str] = mapped_column(Text)
     report_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ShadowDecisionRecord(Base):
+    __tablename__ = "shadow_decision_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    shadow_id: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+    status: Mapped[str] = mapped_column(String(30), index=True)
+    decision_type: Mapped[str] = mapped_column(String(50), index=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    side: Mapped[str] = mapped_column(String(10))
+    strategy_plan_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    signal_review_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    risk_decision_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    data_quality_snapshot_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    order_would_be_submitted: Mapped[bool] = mapped_column(Boolean, default=False)
+    order_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    simulated_entry_price: Mapped[Decimal | None] = mapped_column(
+        Numeric(28, 12), nullable=True
+    )
+    simulated_quantity: Mapped[Decimal | None] = mapped_column(Numeric(28, 12), nullable=True)
+    simulated_notional: Mapped[Decimal | None] = mapped_column(Numeric(28, 12), nullable=True)
+    reason: Mapped[str] = mapped_column(Text)
+    reason_codes_json: Mapped[list[str]] = mapped_column(JSON)
+    context_summary_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=True)
+    order_execution_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class ShadowEvaluationRecord(Base):
+    __tablename__ = "shadow_evaluation_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    shadow_id: Mapped[str] = mapped_column(String(100), index=True)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    current_price: Mapped[Decimal] = mapped_column(Numeric(28, 12))
+    minutes_since_entry: Mapped[float] = mapped_column(Numeric(12, 4))
+    unrealized_pnl_usdt: Mapped[Decimal] = mapped_column(Numeric(28, 12))
+    unrealized_pnl_pct: Mapped[float] = mapped_column(Numeric(12, 6))
+    mfe_usdt: Mapped[Decimal] = mapped_column(Numeric(28, 12))
+    mae_usdt: Mapped[Decimal] = mapped_column(Numeric(28, 12))
+    status: Mapped[str] = mapped_column(String(30), index=True)
+    exit_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)

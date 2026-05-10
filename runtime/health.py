@@ -31,4 +31,5 @@ class RuntimeHealth(BaseModel):
     account_position_status: dict[str, Any] = Field(default_factory=dict)
     risk_runtime_status: dict[str, Any] = Field(default_factory=dict)
     kill_switch_state: dict[str, Any] = Field(default_factory=dict)
+    shadow_status: dict[str, Any] = Field(default_factory=dict)
     health_warning: bool = False
