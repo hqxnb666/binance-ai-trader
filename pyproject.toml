@@ -43,6 +43,7 @@ packages = [
   "runtime",
   "backtest",
   "diagnostics",
+  "data_quality",
 ]
 
 [tool.setuptools.package-data]

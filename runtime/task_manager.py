@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ai.audit_schemas import AuditReportType
 from config.settings import Settings
+from data_quality.gate import DataQualityGate
 from runtime.daemon_state import DaemonState
 from runtime.trading_daemon import TestnetTradingDaemon
 
@@ -91,6 +92,7 @@ class RuntimeTaskManager:
                     "latest_summary": None,
                     "health_warning": False,
                 },
+                "data_quality_status": self._stopped_data_quality_status(),
             }
         return self.daemon.health().model_dump(mode="json")
 
@@ -129,3 +131,40 @@ class RuntimeTaskManager:
         finally:
             if temporary:
                 await daemon._close_broker()
+
+    async def run_data_quality_check(self) -> dict[str, Any]:
+        if self.daemon is not None:
+            return await self.daemon.run_data_quality_check_once()
+        snapshot = DataQualityGate(self.settings).evaluate_runtime_health(
+            runtime_health={
+                "state": DaemonState.STOPPED.value,
+                "market_stream_connected": False,
+                "user_stream_connected": False,
+                "last_kline_time": None,
+                "last_user_event_time": None,
+                "data_delay_seconds": None,
+            },
+            exchange_filters_available=None,
+            account_state_status="unknown",
+            position_state_status="unknown",
+            for_real_order=self.settings.order_execution_enabled
+            and not self.settings.trading_dry_run,
+        )
+        return snapshot.model_dump(mode="json")
+
+    def latest_data_quality(self) -> dict[str, Any]:
+        if self.daemon is not None and self.daemon.latest_data_quality_snapshot is not None:
+            return self.daemon.latest_data_quality_snapshot.model_dump(mode="json")
+        return {"status": "NO_DATA_QUALITY_SNAPSHOT"}
+
+    def _stopped_data_quality_status(self) -> dict[str, Any]:
+        return {
+            "enabled": self.settings.enable_data_quality_gate,
+            "overall_status": "UNKNOWN",
+            "safe_for_strategy_planner": False,
+            "safe_for_signal_review": False,
+            "safe_for_order": False,
+            "safe_for_real_testnet_order": False,
+            "issue_count": 0,
+            "latest_created_at": None,
+        }

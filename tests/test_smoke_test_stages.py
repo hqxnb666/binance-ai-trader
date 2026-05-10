@@ -42,6 +42,16 @@ async def test_smoke_default_does_not_call_real_order_stage(monkeypatch) -> None
     )
     monkeypatch.setattr(
         smoke,
+        "_stage2_5_data_quality",
+        lambda *args, **kwargs: {
+            "overall_status": "OK",
+            "safe_for_signal_review": True,
+            "safe_for_order": True,
+            "issues": [],
+        },
+    )
+    monkeypatch.setattr(
+        smoke,
         "_stage3_ai",
         lambda report, settings, snapshot, with_ai: _async((_review(), True)),
     )

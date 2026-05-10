@@ -8,6 +8,7 @@ from typing import Any
 
 from ai.budget_guard import budget_status
 from config.settings import get_settings
+from data_quality.report_store import latest_data_quality_report, summarize_data_quality_report
 from diagnostics.binance_access import (
     check_binance_global_rest,
     check_binance_global_ws,
@@ -50,6 +51,7 @@ async def run_diagnostics(*, include_openai: bool = True) -> dict[str, Any]:
         "connectivity": connectivity,
         "openai_budget": _openai_budget(settings),
         "latest_audit_summary": _latest_audit_summary(),
+        "latest_data_quality_summary": _latest_data_quality_summary(settings),
         "readiness": _readiness(environment, connectivity, settings.order_execution_enabled),
         "recommended_next_action": _recommend(environment, connectivity),
         "created_at": datetime.now(UTC).isoformat(),
@@ -81,6 +83,20 @@ def _latest_audit_summary() -> dict[str, Any]:
             "latest_issue_count": 0,
             "latest_report_created_at": None,
             "warning": f"Audit table unavailable: {type(exc).__name__}",
+        }
+
+
+def _latest_data_quality_summary(settings: Any) -> dict[str, Any]:
+    try:
+        return summarize_data_quality_report(latest_data_quality_report(settings))
+    except Exception as exc:  # noqa: BLE001 - diagnostics must stay available
+        return {
+            "overall_status": "UNKNOWN",
+            "safe_for_signal_review": None,
+            "safe_for_order": None,
+            "issue_count": 0,
+            "latest_created_at": None,
+            "warning": f"Data quality report unavailable: {type(exc).__name__}",
         }
 
 

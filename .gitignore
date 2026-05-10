@@ -16,6 +16,9 @@ build/
 reports/**/*.json
 reports/**/*.csv
 reports/audits/*.json
+reports/data_quality/*.json
 !reports/README.md
 !reports/audits/
 !reports/audits/README.md
+!reports/data_quality/
+!reports/data_quality/README.md

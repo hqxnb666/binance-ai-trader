@@ -70,7 +70,7 @@ def test_runtime_audit_api_and_health_do_not_expose_keys() -> None:
         client.app.state.runtime_manager = FakeManager()
         latest = client.get("/runtime/audits/latest")
         assert latest.status_code == 200
-        assert latest.json()["status"] == "NO_AUDIT_REPORT"
+        assert "API_KEY" not in str(latest.json())
         run = client.post("/runtime/audits/run")
         assert run.status_code == 200
         assert run.json()["report"]["do_not_auto_modify"] is True

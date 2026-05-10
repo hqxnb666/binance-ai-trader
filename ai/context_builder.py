@@ -9,6 +9,11 @@ from config.settings import Settings
 from journal.models import StrategyPlanRecord
 
 SENSITIVE_MARKERS = ("API_KEY", "SECRET", "TOKEN", "PASSWORD", "PRIVATE")
+RAW_PAYLOAD_MARKERS = ("RAW_PROMPT", "RAW_RESPONSE", "FULL_PROMPT", "FULL_RESPONSE")
+AUDIT_RECENT_SIGNAL_LIMIT = 10
+AUDIT_RECENT_RISK_LIMIT = 10
+AUDIT_RECENT_ORDER_LIMIT = 10
+AUDIT_RECENT_TRADE_REVIEW_LIMIT = 5
 
 
 def build_strategy_context(
@@ -172,6 +177,7 @@ def build_audit_context(
     recent_trade_reviews: list[dict[str, Any]] | None = None,
     openai_usage_summary: dict[str, Any] | None = None,
     data_quality_summary: dict[str, Any] | None = None,
+    latest_data_quality_snapshot: dict[str, Any] | None = None,
     account_state: dict[str, Any] | None = None,
     position_state: dict[str, Any] | None = None,
     diagnostics_summary: dict[str, Any] | None = None,
@@ -199,22 +205,32 @@ def build_audit_context(
             "budget_status": budget_status or health.get("budget_status") or {"status": "unknown"},
             "active_strategy_plan": summarize_strategy_plan(active_strategy_plan),
             "recent_strategy_plans": _truncate_list(
-                recent_strategy_plans or [], settings.ai_context_recent_signal_reviews_limit
+                recent_strategy_plans or [], AUDIT_RECENT_SIGNAL_LIMIT
             ),
             "recent_signal_reviews": _truncate_list(
-                recent_signal_reviews or [], settings.ai_context_recent_signal_reviews_limit
+                recent_signal_reviews or [],
+                min(settings.ai_context_recent_signal_reviews_limit, AUDIT_RECENT_SIGNAL_LIMIT),
             ),
             "recent_risk_decisions": _truncate_list(
-                recent_risk_decisions or [], settings.ai_context_recent_risk_decisions_limit
+                recent_risk_decisions or [],
+                min(settings.ai_context_recent_risk_decisions_limit, AUDIT_RECENT_RISK_LIMIT),
             ),
             "recent_orders": _truncate_list(
-                recent_orders or [], settings.ai_context_recent_orders_limit
+                recent_orders or [],
+                min(settings.ai_context_recent_orders_limit, AUDIT_RECENT_ORDER_LIMIT),
             ),
             "recent_trade_reviews": _truncate_list(
-                recent_trade_reviews or [], settings.ai_context_recent_trade_reviews_limit
+                recent_trade_reviews or [],
+                min(
+                    settings.ai_context_recent_trade_reviews_limit,
+                    AUDIT_RECENT_TRADE_REVIEW_LIMIT,
+                ),
             ),
-            "openai_usage_summary": openai_usage_summary or {"status": "unknown"},
+            "openai_usage_summary": _compact_openai_usage_summary(openai_usage_summary),
             "data_quality_summary": data_quality_summary or {"status": "unknown"},
+            "latest_data_quality_snapshot": _compact_data_quality_snapshot(
+                latest_data_quality_snapshot
+            ),
             "account_state": account_state or _unknown_account_state(),
             "position_state": position_state or _unknown_position(),
             "security_guardrails": {
@@ -230,7 +246,7 @@ def build_audit_context(
                 "auditor_can_modify_strategy": False,
                 "auditor_can_place_order": False,
             },
-            "diagnostics_summary": diagnostics_summary or {"status": "unknown"},
+            "diagnostics_summary": _compact_diagnostics_summary(diagnostics_summary),
             "truncated": False,
         },
     )
@@ -407,7 +423,8 @@ def _sanitize_json(value: Any) -> Any:
     if isinstance(value, dict):
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
-            if any(marker in str(key).upper() for marker in SENSITIVE_MARKERS):
+            key_upper = str(key).upper()
+            if any(marker in key_upper for marker in SENSITIVE_MARKERS + RAW_PAYLOAD_MARKERS):
                 sanitized[str(key)] = "[REDACTED]"
             else:
                 sanitized[str(key)] = _sanitize_json(item)
@@ -420,6 +437,8 @@ def _sanitize_json(value: Any) -> Any:
         return float(value)
     if isinstance(value, tuple | set):
         return [_sanitize_json(item) for item in value]
+    if isinstance(value, str) and len(value) > 1000:
+        return value[:988].rstrip() + " [truncated]"
     return value
 
 
@@ -448,3 +467,78 @@ def _permission_rules_to_dict(value: Any) -> dict[str, str]:
                 result[str(symbol).upper()] = str(permission)
         return result
     return {}
+
+
+def _compact_openai_usage_summary(summary: dict[str, Any] | None) -> dict[str, Any]:
+    if not summary:
+        return {"status": "unknown"}
+    return _sanitize_json(
+        {
+            "days": summary.get("days"),
+            "total_calls": summary.get("total_calls"),
+            "estimated_cost_usd": summary.get("estimated_cost_usd"),
+            "by_role": summary.get("by_role", {}),
+            "by_model": summary.get("by_model", {}),
+        }
+    )
+
+
+def _compact_diagnostics_summary(summary: dict[str, Any] | None) -> dict[str, Any]:
+    if not summary:
+        return {"status": "unknown"}
+    compact: dict[str, Any] = {}
+    for key, value in summary.items():
+        if isinstance(value, dict):
+            compact[str(key)] = {
+                str(inner_key): _sanitize_json(inner_value)
+                for inner_key, inner_value in value.items()
+                if str(inner_key)
+                in {
+                    "status",
+                    "state",
+                    "latency_ms",
+                    "proxy_env_present",
+                    "last_diagnostics_at",
+                    "can_run_testnet_smoke",
+                    "can_run_with_ai",
+                    "can_place_testnet_order_if_enabled",
+                }
+                or str(inner_key).endswith("_status")
+            }
+        elif str(key) in {"status", "state", "last_diagnostics_at", "proxy_env_present"}:
+            compact[str(key)] = _sanitize_json(value)
+    return compact or {"status": "unknown"}
+
+
+def _compact_data_quality_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    if not snapshot:
+        return {"status": "unknown"}
+    issues = snapshot.get("issues", [])
+    compact_issues = []
+    if isinstance(issues, list):
+        for issue in issues[:10]:
+            if not isinstance(issue, dict):
+                continue
+            compact_issues.append(
+                {
+                    "severity": issue.get("severity"),
+                    "category": issue.get("category"),
+                    "title": issue.get("title"),
+                    "blocks_signal_review": issue.get("blocks_signal_review"),
+                    "blocks_order": issue.get("blocks_order"),
+                }
+            )
+    return _sanitize_json(
+        {
+            "schema_version": snapshot.get("schema_version"),
+            "created_at": snapshot.get("created_at"),
+            "overall_status": snapshot.get("overall_status"),
+            "action": snapshot.get("action"),
+            "safe_for_strategy_planner": snapshot.get("safe_for_strategy_planner"),
+            "safe_for_signal_review": snapshot.get("safe_for_signal_review"),
+            "safe_for_order": snapshot.get("safe_for_order"),
+            "safe_for_real_testnet_order": snapshot.get("safe_for_real_testnet_order"),
+            "reason_codes": snapshot.get("reason_codes", [])[:20],
+            "issues": compact_issues,
+        }
+    )

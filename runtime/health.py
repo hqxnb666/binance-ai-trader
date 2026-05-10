@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from runtime.daemon_state import DaemonState
 
@@ -23,8 +23,9 @@ class RuntimeHealth(BaseModel):
     order_execution_enabled: bool
     reconnecting: bool = False
     data_delay_seconds: float | None = None
-    market_stream: dict[str, Any] = {}
-    user_stream: dict[str, Any] = {}
-    budget_status: dict[str, Any] = {}
-    audit_status: dict[str, Any] = {}
+    market_stream: dict[str, Any] = Field(default_factory=dict)
+    user_stream: dict[str, Any] = Field(default_factory=dict)
+    budget_status: dict[str, Any] = Field(default_factory=dict)
+    audit_status: dict[str, Any] = Field(default_factory=dict)
+    data_quality_status: dict[str, Any] = Field(default_factory=dict)
     health_warning: bool = False

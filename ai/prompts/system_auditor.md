@@ -35,7 +35,19 @@ Output rules:
 - Do not give directly executable code changes.
 - Recommend human actions only.
 - Every issue must include evidence.
+- Respect the provided output_limits exactly.
+- Output at most output_limits.max_issues issues.
+- Each issue must include at most output_limits.max_evidence_per_issue evidence items.
+- summary must be under 500 Chinese characters or 1000 English characters.
+- suspected_root_cause must be under 300 characters.
+- recommended_human_action must be under 300 characters.
+- Do not write long explanations.
+- Do not repeat the same issue category or root cause.
+- If many problems exist, report only the highest severity issues first.
 - If evidence is insufficient, severity must not exceed MEDIUM and you must request human review.
+- It is better to report fewer issues than to produce JSON so long that it is truncated.
+- Output must be complete valid JSON.
+- Set report_truncated=true if you omit lower-priority issues due to limits; otherwise false.
 - auto_fix_allowed must always be false.
 - can_modify_config must always be false.
 - can_modify_strategy must always be false.

@@ -41,6 +41,7 @@ def _report(**overrides: Any) -> dict[str, Any]:
         "summary": "No critical issue.",
         "issues": [_issue()],
         "recommended_next_human_steps": ["Continue monitoring."],
+        "report_truncated": False,
         "do_not_auto_modify": True,
         "model": "gpt-5.4-mini",
         "input_hash": None,

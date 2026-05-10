@@ -168,8 +168,8 @@ class Settings(BaseModel):
     openai_trade_review_max_output_tokens: int = 600
     openai_daily_report_max_output_tokens: int = 900
     openai_diagnostic_max_output_tokens: int = 120
-    openai_system_auditor_max_output_tokens: int = 1000
-    openai_deep_auditor_max_output_tokens: int = 1400
+    openai_system_auditor_max_output_tokens: int = 1600
+    openai_deep_auditor_max_output_tokens: int = 2000
     openai_enable_model_fallback: bool = False
     openai_fallback_models: list[str] = ["gpt-5.4-mini", "gpt-5.4"]
     enable_strategy_planner: bool = True
@@ -183,6 +183,26 @@ class Settings(BaseModel):
     system_auditor_can_modify_config: bool = False
     system_auditor_can_modify_strategy: bool = False
     system_auditor_can_place_order: bool = False
+    system_auditor_max_issues: int = 5
+    system_auditor_max_evidence_per_issue: int = 3
+    system_auditor_max_text_chars: int = 600
+    enable_data_quality_gate: bool = True
+    data_quality_max_market_delay_seconds: float = 15.0
+    data_quality_max_user_stream_delay_seconds: float = 60.0
+    data_quality_max_kline_staleness_seconds: float = 600.0
+    data_quality_require_market_stream_for_daemon: bool = True
+    data_quality_require_user_stream_for_real_order: bool = True
+    data_quality_allow_user_stream_missing_in_dry_run: bool = True
+    data_quality_block_strategy_planner_on_critical: bool = True
+    data_quality_block_signal_review_on_critical: bool = True
+    data_quality_block_order_on_warning: bool = False
+    data_quality_block_order_on_critical: bool = True
+    data_quality_max_nan_indicators: int = 0
+    data_quality_min_required_klines: int = 50
+    data_quality_require_exchange_filters: bool = True
+    data_quality_require_account_state_for_real_order: bool = True
+    data_quality_require_position_state_for_real_order: bool = True
+    data_quality_report_dir: str = "reports/data_quality"
     openai_daily_budget_usd: float = 1.0
     openai_monthly_budget_usd: float = 20.0
     openai_strategy_daily_call_limit: int = 24
@@ -257,6 +277,9 @@ class Settings(BaseModel):
                 "system_auditor_can_modify_config": self.system_auditor_can_modify_config,
                 "system_auditor_can_modify_strategy": self.system_auditor_can_modify_strategy,
                 "system_auditor_can_place_order": self.system_auditor_can_place_order,
+                "system_auditor_max_issues": self.system_auditor_max_issues,
+                "system_auditor_max_evidence_per_issue": self.system_auditor_max_evidence_per_issue,
+                "system_auditor_max_text_chars": self.system_auditor_max_text_chars,
                 "daily_budget_usd": self.openai_daily_budget_usd,
                 "monthly_budget_usd": self.openai_monthly_budget_usd,
                 "strategy_daily_call_limit": self.openai_strategy_daily_call_limit,
@@ -269,6 +292,39 @@ class Settings(BaseModel):
                 "can_propose_trade": self.ai_can_propose_trade,
                 "can_place_order_directly": self.ai_can_place_order_directly,
                 "has_api_key": self.openai_api_key is not None,
+            },
+            "data_quality": {
+                "enabled": self.enable_data_quality_gate,
+                "max_market_delay_seconds": self.data_quality_max_market_delay_seconds,
+                "max_user_stream_delay_seconds": self.data_quality_max_user_stream_delay_seconds,
+                "max_kline_staleness_seconds": self.data_quality_max_kline_staleness_seconds,
+                "require_market_stream_for_daemon": (
+                    self.data_quality_require_market_stream_for_daemon
+                ),
+                "require_user_stream_for_real_order": (
+                    self.data_quality_require_user_stream_for_real_order
+                ),
+                "allow_user_stream_missing_in_dry_run": (
+                    self.data_quality_allow_user_stream_missing_in_dry_run
+                ),
+                "block_strategy_planner_on_critical": (
+                    self.data_quality_block_strategy_planner_on_critical
+                ),
+                "block_signal_review_on_critical": (
+                    self.data_quality_block_signal_review_on_critical
+                ),
+                "block_order_on_warning": self.data_quality_block_order_on_warning,
+                "block_order_on_critical": self.data_quality_block_order_on_critical,
+                "max_nan_indicators": self.data_quality_max_nan_indicators,
+                "min_required_klines": self.data_quality_min_required_klines,
+                "require_exchange_filters": self.data_quality_require_exchange_filters,
+                "require_account_state_for_real_order": (
+                    self.data_quality_require_account_state_for_real_order
+                ),
+                "require_position_state_for_real_order": (
+                    self.data_quality_require_position_state_for_real_order
+                ),
+                "report_dir": self.data_quality_report_dir,
             },
             "symbols": self.symbols.model_dump(),
             "risk": self.risk_config.model_dump(),
@@ -326,10 +382,10 @@ def load_settings(base_dir: Path = BASE_DIR) -> Settings:
         ),
         openai_diagnostic_max_output_tokens=_env_int("OPENAI_DIAGNOSTIC_MAX_OUTPUT_TOKENS", 120),
         openai_system_auditor_max_output_tokens=_env_int(
-            "OPENAI_SYSTEM_AUDITOR_MAX_OUTPUT_TOKENS", 1000
+            "OPENAI_SYSTEM_AUDITOR_MAX_OUTPUT_TOKENS", 1600
         ),
         openai_deep_auditor_max_output_tokens=_env_int(
-            "OPENAI_DEEP_AUDITOR_MAX_OUTPUT_TOKENS", 1400
+            "OPENAI_DEEP_AUDITOR_MAX_OUTPUT_TOKENS", 2000
         ),
         openai_enable_model_fallback=_env_bool("OPENAI_ENABLE_MODEL_FALLBACK", False),
         openai_fallback_models=_env_csv("OPENAI_FALLBACK_MODELS", ["gpt-5.4-mini", "gpt-5.4"]),
@@ -346,6 +402,54 @@ def load_settings(base_dir: Path = BASE_DIR) -> Settings:
         system_auditor_can_modify_config=False,
         system_auditor_can_modify_strategy=False,
         system_auditor_can_place_order=False,
+        system_auditor_max_issues=_env_int("SYSTEM_AUDITOR_MAX_ISSUES", 5),
+        system_auditor_max_evidence_per_issue=_env_int(
+            "SYSTEM_AUDITOR_MAX_EVIDENCE_PER_ISSUE", 3
+        ),
+        system_auditor_max_text_chars=_env_int("SYSTEM_AUDITOR_MAX_TEXT_CHARS", 600),
+        enable_data_quality_gate=_env_bool("ENABLE_DATA_QUALITY_GATE", True),
+        data_quality_max_market_delay_seconds=_env_float(
+            "DATA_QUALITY_MAX_MARKET_DELAY_SECONDS", 15.0
+        ),
+        data_quality_max_user_stream_delay_seconds=_env_float(
+            "DATA_QUALITY_MAX_USER_STREAM_DELAY_SECONDS", 60.0
+        ),
+        data_quality_max_kline_staleness_seconds=_env_float(
+            "DATA_QUALITY_MAX_KLINE_STALENESS_SECONDS", 600.0
+        ),
+        data_quality_require_market_stream_for_daemon=_env_bool(
+            "DATA_QUALITY_REQUIRE_MARKET_STREAM_FOR_DAEMON", True
+        ),
+        data_quality_require_user_stream_for_real_order=_env_bool(
+            "DATA_QUALITY_REQUIRE_USER_STREAM_FOR_REAL_ORDER", True
+        ),
+        data_quality_allow_user_stream_missing_in_dry_run=_env_bool(
+            "DATA_QUALITY_ALLOW_USER_STREAM_MISSING_IN_DRY_RUN", True
+        ),
+        data_quality_block_strategy_planner_on_critical=_env_bool(
+            "DATA_QUALITY_BLOCK_STRATEGY_PLANNER_ON_CRITICAL", True
+        ),
+        data_quality_block_signal_review_on_critical=_env_bool(
+            "DATA_QUALITY_BLOCK_SIGNAL_REVIEW_ON_CRITICAL", True
+        ),
+        data_quality_block_order_on_warning=_env_bool(
+            "DATA_QUALITY_BLOCK_ORDER_ON_WARNING", False
+        ),
+        data_quality_block_order_on_critical=_env_bool(
+            "DATA_QUALITY_BLOCK_ORDER_ON_CRITICAL", True
+        ),
+        data_quality_max_nan_indicators=_env_int("DATA_QUALITY_MAX_NAN_INDICATORS", 0),
+        data_quality_min_required_klines=_env_int("DATA_QUALITY_MIN_REQUIRED_KLINES", 50),
+        data_quality_require_exchange_filters=_env_bool(
+            "DATA_QUALITY_REQUIRE_EXCHANGE_FILTERS", True
+        ),
+        data_quality_require_account_state_for_real_order=_env_bool(
+            "DATA_QUALITY_REQUIRE_ACCOUNT_STATE_FOR_REAL_ORDER", True
+        ),
+        data_quality_require_position_state_for_real_order=_env_bool(
+            "DATA_QUALITY_REQUIRE_POSITION_STATE_FOR_REAL_ORDER", True
+        ),
+        data_quality_report_dir=_env_str("DATA_QUALITY_REPORT_DIR", "reports/data_quality"),
         openai_daily_budget_usd=_env_float("OPENAI_DAILY_BUDGET_USD", 1.0),
         openai_monthly_budget_usd=_env_float("OPENAI_MONTHLY_BUDGET_USD", 20.0),
         openai_strategy_daily_call_limit=_env_int("OPENAI_STRATEGY_DAILY_CALL_LIMIT", 24),

@@ -20,9 +20,18 @@ from ai.context_builder import (
     build_strategy_context,
     summarize_strategy_plan,
 )
-from ai.schemas import TradeReview as TradeReviewSchema
+from ai.schemas import (
+    MarketRegime,
+    RiskLevel,
+    SignalDecision,
+    SignalReview,
+    SignalSide,
+)
+from ai.schemas import (
+    TradeReview as TradeReviewSchema,
+)
 from ai.signal_reviewer import SignalReviewer, SignalReviewResult
-from ai.strategy_planner import StrategyPlanner
+from ai.strategy_planner import StrategyPlanner, fail_closed_strategy_output
 from ai.strategy_schemas import StrategyPlanningMode
 from ai.system_auditor import SystemAuditor
 from ai.trade_reviewer import TradeReviewer
@@ -32,6 +41,8 @@ from binance_client.user_stream import UserDataStreamClient
 from broker.base import Broker, OrderRequest
 from broker.binance_spot_testnet import BinanceSpotTestnetBroker
 from config.settings import Settings
+from data_quality.gate import DataQualityGate
+from data_quality.schemas import DataQualitySeverity, DataQualitySnapshot
 from features.kline_store import binance_klines_to_dataframe, persist_kline_event
 from features.market_snapshot import build_market_snapshot
 from journal.audit_store import (
@@ -86,6 +97,7 @@ class TestnetTradingDaemon:
         self.signal_reviewer = signal_reviewer or SignalReviewer(settings)
         self.strategy_planner = StrategyPlanner(settings)
         self.system_auditor = SystemAuditor(settings)
+        self.data_quality_gate = DataQualityGate(settings)
         self.strategy = EmaTrendStrategy(settings.strategy.ema_trend)
         self.poll_interval_seconds = poll_interval_seconds
         self.reconciliation_interval_seconds = reconciliation_interval_seconds
@@ -117,6 +129,7 @@ class TestnetTradingDaemon:
         self.active_strategy_plan: dict[str, Any] | None = None
         self.last_strategy_plan_at: datetime | None = None
         self.latest_audit_report: dict[str, Any] | None = None
+        self.latest_data_quality_snapshot: DataQualitySnapshot | None = None
 
     async def start(self) -> dict[str, Any]:
         if self.state in {DaemonState.STARTING, DaemonState.RUNNING}:
@@ -179,6 +192,10 @@ class TestnetTradingDaemon:
         user_health = self.user_stream.health if self.user_stream else None
         data_delay = self._data_delay_seconds()
         audit_status = self._audit_status()
+        data_quality_status = self._data_quality_status()
+        health_warning = bool(audit_status.get("health_warning")) or data_quality_status.get(
+            "overall_status"
+        ) in {"DEGRADED", "CRITICAL"}
         return RuntimeHealth(
             state=self.state,
             trading_mode="testnet",
@@ -200,7 +217,8 @@ class TestnetTradingDaemon:
             user_stream=user_health.as_dict() if user_health else {"connected": False},
             budget_status=self._budget_status(),
             audit_status=audit_status,
-            health_warning=bool(audit_status.get("health_warning")),
+            data_quality_status=data_quality_status,
+            health_warning=health_warning,
         )
 
     async def _task_wrapper(self, name: str, coro: Any) -> None:
@@ -319,37 +337,70 @@ class TestnetTradingDaemon:
                         ],
                         budget_status=budget_status(self.settings, session),
                         data_quality_summary={
-                            "market_stream_connected": self._market_connected_for_runtime(),
-                            "data_delay_seconds": self._data_delay_seconds(),
-                            "source": "runtime_health",
+                            **self._data_quality_status(),
+                            "source": "runtime_data_quality_gate",
                         },
                     )
-                    result = await asyncio.to_thread(
-                        self.strategy_planner.plan,
-                        planning_mode=planning_mode,
-                        context=context,
-                        active_plan_id=str(active.id) if active else None,
-                        usage_session=session,
+                    dq_snapshot = self._evaluate_data_quality_runtime(
+                        active_strategy_plan=summarize_strategy_plan(active)
                     )
-                    record_status = _strategy_plan_record_status(result)
-                    record = save_strategy_plan(
-                        session,
-                        plan=result.output,
-                        raw_input_json=context,
-                        model=result.model,
-                        status=record_status,
-                    )
-                    session.commit()
-                    self.active_strategy_plan = summarize_strategy_plan(
-                        record if record_status == "ACTIVE" else active
-                    )
-                    self.last_strategy_plan_at = datetime.now(UTC)
-                    self._log(
-                        "strategy_plan_completed",
-                        model=result.model,
-                        planning_mode=planning_mode.value,
-                        schema_valid=result.schema_valid,
-                    )
+                    if (
+                        self.settings.enable_data_quality_gate
+                        and self.settings.data_quality_block_strategy_planner_on_critical
+                        and dq_snapshot.overall_status == DataQualitySeverity.CRITICAL
+                    ):
+                        output = fail_closed_strategy_output(
+                            planning_mode=planning_mode,
+                            previous_plan_id=str(active.id) if active else None,
+                            reason_code="DATA_QUALITY_BLOCKED",
+                            explanation="StrategyPlanner blocked by critical DataQualityGate.",
+                        )
+                        record = save_strategy_plan(
+                            session,
+                            plan=output,
+                            raw_input_json={
+                                "context": context,
+                                "data_quality": dq_snapshot.model_dump(mode="json"),
+                            },
+                            model="data_quality_gate",
+                            status="ACTIVE",
+                        )
+                        session.commit()
+                        self.active_strategy_plan = summarize_strategy_plan(record)
+                        self.last_strategy_plan_at = datetime.now(UTC)
+                        self._log(
+                            "data_quality_blocked_strategy_planner",
+                            level="WARNING",
+                            overall_status=dq_snapshot.overall_status.value,
+                            reason_codes=dq_snapshot.reason_codes,
+                        )
+                    else:
+                        result = await asyncio.to_thread(
+                            self.strategy_planner.plan,
+                            planning_mode=planning_mode,
+                            context=context,
+                            active_plan_id=str(active.id) if active else None,
+                            usage_session=session,
+                        )
+                        record_status = _strategy_plan_record_status(result)
+                        record = save_strategy_plan(
+                            session,
+                            plan=result.output,
+                            raw_input_json=context,
+                            model=result.model,
+                            status=record_status,
+                        )
+                        session.commit()
+                        self.active_strategy_plan = summarize_strategy_plan(
+                            record if record_status == "ACTIVE" else active
+                        )
+                        self.last_strategy_plan_at = datetime.now(UTC)
+                        self._log(
+                            "strategy_plan_completed",
+                            model=result.model,
+                            planning_mode=planning_mode.value,
+                            schema_valid=result.schema_valid,
+                        )
             except Exception as exc:  # noqa: BLE001
                 self.last_error = str(exc)
                 self._log("strategy_plan_failed", level="ERROR", error=str(exc))
@@ -449,6 +500,12 @@ class TestnetTradingDaemon:
             data_delay_seconds=self._data_delay_seconds(),
         ).compact_dict()
         self.last_snapshots[symbol] = snapshot
+        dq_snapshot = self._evaluate_data_quality_signal(
+            snapshot=snapshot,
+            entry_df=entry_df,
+            trend_df=trend_df,
+            active_strategy_plan=self.active_strategy_plan,
+        )
         self._log("snapshot_created", symbol=symbol)
         if signal is None:
             with self.session_factory() as session:
@@ -486,6 +543,55 @@ class TestnetTradingDaemon:
                 raw_context_json=signal.model_dump(mode="json"),
             )
             self._log("strategy_signal_generated", symbol=symbol, side=signal.side)
+            if (
+                self.settings.enable_data_quality_gate
+                and self.settings.data_quality_block_signal_review_on_critical
+                and not dq_snapshot.safe_for_signal_review
+            ):
+                ai_result = self._data_quality_blocked_signal_result(
+                    snapshot=snapshot,
+                    reason="SignalReview blocked by DataQualityGate",
+                    data_quality=dq_snapshot,
+                )
+                ai_record = AIAnalysis(
+                    **SignalReviewer.analysis_payload(
+                        snapshot=ai_result.input_payload or snapshot,
+                        review=ai_result.review,
+                        schema_valid=ai_result.schema_valid,
+                        model=ai_result.actual_model,
+                    )
+                )
+                session.add(ai_record)
+                session.flush()
+                self._audit(
+                    session,
+                    run_id=run_id,
+                    symbol=symbol,
+                    stage=PipelineStage.AI_REVIEWED,
+                    status=PipelineStatus.REJECTED,
+                    signal_id=signal_record.id,
+                    ai_analysis_id=ai_record.id,
+                    raw_context_json=ai_result.review.model_dump(mode="json"),
+                    error_message="DATA_QUALITY_BLOCKED",
+                )
+                self.last_ai_reviews.append(
+                    {
+                        "symbol": symbol,
+                        "schema_valid": ai_result.schema_valid,
+                        "actual_model": ai_result.actual_model,
+                        "active_strategy_plan_id": ai_result.active_strategy_plan_id,
+                        "review": ai_result.review.model_dump(mode="json"),
+                    }
+                )
+                self.last_ai_reviews = self.last_ai_reviews[-20:]
+                self._log(
+                    "data_quality_blocked_signal_review",
+                    level="WARNING",
+                    symbol=symbol,
+                    reason_codes=dq_snapshot.reason_codes,
+                )
+                session.commit()
+                return
             self._log("ai_review_started", symbol=symbol)
             ai_result: SignalReviewResult = await asyncio.to_thread(
                 self.signal_reviewer.review_with_schema,
@@ -499,8 +605,8 @@ class TestnetTradingDaemon:
                     risk_state={"status": "pre_risk_check"},
                     settings=self.settings,
                     data_quality_flags=[]
-                    if self._market_connected_for_runtime()
-                    else ["market_stream_unhealthy"],
+                    if dq_snapshot.safe_for_signal_review
+                    else dq_snapshot.reason_codes,
                     budget_status=budget_status(self.settings, session),
                 ),
                 usage_session=session,
@@ -654,6 +760,45 @@ class TestnetTradingDaemon:
             symbol=symbol,
             reason=decision.reason,
         )
+        order_quality = self.data_quality_gate.evaluate_order_preconditions(
+            symbol=symbol,
+            market_health={
+                "market_stream_connected": market_health.market_stream_connected,
+                "user_stream_connected": market_health.user_stream_connected,
+                "data_delay_seconds": market_health.data_delay_seconds,
+                "last_kline_time": self.last_kline_time.isoformat()
+                if self.last_kline_time
+                else None,
+                "last_user_event_time": self.last_user_event_time.isoformat()
+                if self.last_user_event_time
+                else None,
+            },
+            exchange_filters_available=filters is not None,
+            account_state_status="simulated_default"
+            if self.dry_run or not self.order_execution_enabled
+            else "unknown",
+            position_state_status="simulated_default"
+            if self.dry_run or not self.order_execution_enabled
+            else "unknown",
+            active_strategy_plan=self.active_strategy_plan,
+            for_real_order=self.order_execution_enabled and not self.dry_run,
+        )
+        self.latest_data_quality_snapshot = order_quality
+        if (
+            self.settings.enable_data_quality_gate
+            and not order_quality.safe_for_order
+            and (
+                self.settings.data_quality_block_order_on_critical
+                or order_quality.overall_status != DataQualitySeverity.CRITICAL
+            )
+        ):
+            self._log(
+                "data_quality_blocked_order",
+                level="WARNING",
+                symbol=symbol,
+                reason_codes=order_quality.reason_codes,
+            )
+            return
         manager = OrderManager(broker=self.broker, session=session, trading_mode="testnet")
         order_record = await manager.submit_order(
             signal=signal,
@@ -857,6 +1002,79 @@ class TestnetTradingDaemon:
         except Exception as exc:  # noqa: BLE001 - health should stay available
             return budget_status(self.settings, None) | {"warning": type(exc).__name__}
 
+    def _evaluate_data_quality_runtime(
+        self, *, active_strategy_plan: dict[str, Any] | None = None
+    ) -> DataQualitySnapshot:
+        snapshot = self.data_quality_gate.evaluate_runtime_health(
+            runtime_health=self._runtime_health_snapshot(),
+            exchange_filters_available=bool(self.exchange_filters) or None,
+            account_state_status="simulated_default"
+            if self.dry_run or not self.order_execution_enabled
+            else "unknown",
+            position_state_status="simulated_default"
+            if self.dry_run or not self.order_execution_enabled
+            else "unknown",
+            active_strategy_plan=active_strategy_plan,
+            for_real_order=self.order_execution_enabled and not self.dry_run,
+        )
+        self.latest_data_quality_snapshot = snapshot
+        return snapshot
+
+    def _evaluate_data_quality_signal(
+        self,
+        *,
+        snapshot: dict[str, Any],
+        entry_df: pd.DataFrame,
+        trend_df: pd.DataFrame,
+        active_strategy_plan: dict[str, Any] | None,
+    ) -> DataQualitySnapshot:
+        dq_snapshot = self.data_quality_gate.evaluate_signal_context(
+            snapshot=snapshot,
+            entry_df=entry_df,
+            trend_df=trend_df,
+            active_strategy_plan=active_strategy_plan,
+        )
+        self.latest_data_quality_snapshot = dq_snapshot
+        return dq_snapshot
+
+    async def run_data_quality_check_once(self) -> dict[str, Any]:
+        snapshot = self._evaluate_data_quality_runtime(
+            active_strategy_plan=self.active_strategy_plan
+        )
+        return snapshot.model_dump(mode="json")
+
+    def _data_quality_status(self) -> dict[str, Any]:
+        snapshot = self.latest_data_quality_snapshot
+        if snapshot is None:
+            try:
+                snapshot = self._evaluate_data_quality_runtime(
+                    active_strategy_plan=self.active_strategy_plan
+                )
+            except Exception as exc:  # noqa: BLE001 - health must remain available
+                return {
+                    "enabled": self.settings.enable_data_quality_gate,
+                    "overall_status": "UNKNOWN",
+                    "safe_for_strategy_planner": False,
+                    "safe_for_signal_review": False,
+                    "safe_for_order": False,
+                    "safe_for_real_testnet_order": False,
+                    "issue_count": 0,
+                    "latest_created_at": None,
+                    "warning": type(exc).__name__,
+                }
+        return {
+            "enabled": self.settings.enable_data_quality_gate,
+            "overall_status": snapshot.overall_status.value,
+            "action": snapshot.action.value,
+            "safe_for_strategy_planner": snapshot.safe_for_strategy_planner,
+            "safe_for_signal_review": snapshot.safe_for_signal_review,
+            "safe_for_order": snapshot.safe_for_order,
+            "safe_for_real_testnet_order": snapshot.safe_for_real_testnet_order,
+            "issue_count": len(snapshot.issues),
+            "latest_created_at": snapshot.created_at.isoformat(),
+            "reason_codes": snapshot.reason_codes,
+        }
+
     def _audit_status(self) -> dict[str, object]:
         try:
             with self.session_factory() as session:
@@ -975,6 +1193,9 @@ class TestnetTradingDaemon:
                 "data_delay_seconds": self._data_delay_seconds(),
                 "last_error": self.last_error,
             },
+            latest_data_quality_snapshot=self.latest_data_quality_snapshot.model_dump(mode="json")
+            if self.latest_data_quality_snapshot
+            else None,
             account_state=_simulated_account_context(),
             position_state={"status": "unknown", "source": "not_synced"},
         )
@@ -989,6 +1210,40 @@ class TestnetTradingDaemon:
             "reconnecting": self.market_stream.health.reconnecting
             or bool(self.user_stream and self.user_stream.health.reconnecting),
         }
+
+    def _data_quality_blocked_signal_result(
+        self,
+        *,
+        snapshot: dict[str, Any],
+        reason: str,
+        data_quality: DataQualitySnapshot,
+    ) -> SignalReviewResult:
+        review = SignalReview(
+            decision=SignalDecision.HUMAN_REVIEW_REQUIRED,
+            symbol=str(snapshot.get("symbol", "UNKNOWN")),
+            side=SignalSide.HOLD,
+            confidence=0,
+            risk_level=RiskLevel.HIGH,
+            market_regime=MarketRegime.UNCLEAR,
+            reason=f"{reason}: DATA_QUALITY_BLOCKED",
+            warnings=data_quality.reason_codes[:5] or ["DATA_QUALITY_BLOCKED"],
+            max_position_pct=0,
+            requires_human_review=True,
+        )
+        payload = {
+            **snapshot,
+            "data_quality_snapshot": data_quality.model_dump(mode="json"),
+            "reason_codes": ["DATA_QUALITY_BLOCKED", *data_quality.reason_codes],
+        }
+        return SignalReviewResult(
+            review=review,
+            approved_for_risk=False,
+            reason="DATA_QUALITY_BLOCKED",
+            schema_valid=True,
+            actual_model="data_quality_gate",
+            active_strategy_plan_id=(self.active_strategy_plan or {}).get("id"),
+            input_payload=payload,
+        )
 
 
 def _simulated_account_context() -> dict[str, object]:

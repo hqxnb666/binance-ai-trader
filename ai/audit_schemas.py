@@ -76,6 +76,7 @@ class TradingIssueReport(BaseModel):
     summary: str
     issues: list[AuditIssue]
     recommended_next_human_steps: list[str]
+    report_truncated: bool
     do_not_auto_modify: Literal[True]
     model: str
     input_hash: str | None = Field(...)

@@ -219,6 +219,38 @@ Manual remediation flow:
 If an audit reports `CRITICAL`, that is a warning for human review. It does not automatically stop
 the daemon unless a future explicit KillSwitch rule is added.
 
+## DataQualityGate
+
+DataQualityGate is a read-only pre-trade data gate. It checks market stream health, user stream
+health, kline freshness, indicator NaN values, exchange filters, account/position state,
+StrategyPlan safety, runtime mode, and security guardrails before expensive AI review or any order
+path.
+
+It can only warn, degrade, or block. It cannot place orders, modify config, call Codex, change
+strategy parameters, or bypass RiskEngine. Critical data quality blocks StrategyPlanner,
+SignalReview, and OrderManager entry points. Dry-run can tolerate some unknown user/account state,
+but real Testnet orders require user stream, account state, position state, and exchange filters.
+
+Manual check:
+
+```powershell
+python scripts/data_quality_check.py --json
+python scripts/data_quality_check.py --save-report
+```
+
+Reports are written to `reports/data_quality/` and generated JSON is ignored by git.
+
+Runtime endpoints:
+
+```powershell
+curl http://127.0.0.1:8000/runtime/data-quality/latest
+curl -X POST http://127.0.0.1:8000/runtime/data-quality/check
+curl http://127.0.0.1:8000/runtime/health
+```
+
+`/runtime/health` includes `data_quality_status` with the latest overall status, safe-for-AI flags,
+safe-for-order flags, issue count, and reason codes.
+
 ## Dry-run Mode
 
 Dry-run is the default:
@@ -271,6 +303,8 @@ Smoke test behavior:
   dry-run, and order execution flags.
 - Stage 1 checks REST ping, server time, exchangeInfo, and BTCUSDT/ETHUSDT filters.
 - Stage 2 loads 5m/1h market data, stores klines, calculates indicators, and creates snapshots.
+- Stage 2.5 runs DataQualityGate. Critical data quality stops AI review and all order stages with
+  `DATA_QUALITY_BLOCKED`.
 - Stage 3 calls OpenAI only with `--with-ai`; otherwise it uses a local schema-valid no-ai review.
 - Stage 4 runs RiskEngine.
 - Stage 5 calls Binance `test_order` only after RiskEngine approval.

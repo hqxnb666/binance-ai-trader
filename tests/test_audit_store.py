@@ -50,6 +50,7 @@ def _report(severity: str = "LOW") -> TradingIssueReport:
                 }
             ],
             "recommended_next_human_steps": ["review"],
+            "report_truncated": False,
             "do_not_auto_modify": True,
             "model": "gpt-5.4-mini",
             "input_hash": None,

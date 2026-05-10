@@ -26,6 +26,8 @@ from binance_client.exchange_info import SymbolFilters, parse_symbol_filters  # 
 from broker.base import OrderRequest  # noqa: E402
 from broker.binance_spot_testnet import BinanceSpotTestnetBroker  # noqa: E402
 from config.settings import Settings, get_settings  # noqa: E402
+from data_quality.gate import DataQualityGate  # noqa: E402
+from data_quality.schemas import DataQualitySeverity  # noqa: E402
 from diagnostics.report import run_diagnostics  # noqa: E402
 from features.indicators import calculate_indicators  # noqa: E402
 from features.kline_store import binance_klines_to_dataframe  # noqa: E402
@@ -121,10 +123,22 @@ async def smoke_test(
 
     broker = BinanceSpotTestnetBroker(settings)
     try:
-        exchange_info, filters = await _stage1_rest(report, broker, settings)
+        _exchange_info, filters = await _stage1_rest(report, broker, settings)
         frames = await _stage2_market_data(report, broker, settings)
         signal, snapshot = _build_signal_and_snapshot(settings, frames)
         report["snapshot"] = snapshot
+        data_quality = _stage2_5_data_quality(
+            report,
+            settings,
+            frames,
+            filters,
+            snapshot,
+            require_real_order=allow_real_testnet_order or test_order_only,
+        )
+        if data_quality["overall_status"] == DataQualitySeverity.CRITICAL.value:
+            report["status"] = "DATA_QUALITY_BLOCKED"
+            report["error"] = "DataQualityGate blocked smoke test before AI/order stages."
+            return report
         review, schema_valid = await _stage3_ai(report, settings, snapshot, with_ai)
         if not schema_valid:
             report["status"] = "AI_SCHEMA_FAILED"
@@ -203,6 +217,62 @@ async def _stage2_market_data(
     stage.update({"ok": True, "indicators": indicators})
     report["stages"].append(stage)
     return frames
+
+
+def _stage2_5_data_quality(
+    report: dict[str, Any],
+    settings: Settings,
+    frames: dict[tuple[str, str], Any],
+    filters: dict[str, SymbolFilters],
+    snapshot: dict[str, Any],
+    *,
+    require_real_order: bool,
+) -> dict[str, Any]:
+    stage = _stage("Stage 2.5: DataQualityGate")
+    symbol = str(snapshot.get("symbol", settings.symbols.enabled_symbols[0]))
+    data_quality = DataQualityGate(settings).evaluate_runtime_health(
+        runtime_health={
+            "state": "smoke_test",
+            "market_stream_connected": True,
+            "user_stream_connected": (
+                not require_real_order or bool(settings.binance_testnet_api_key)
+            ),
+            "last_kline_time": frames[(symbol, "5m")]["close_time"].iloc[-1].isoformat(),
+            "last_user_event_time": None,
+            "data_delay_seconds": snapshot.get("data_delay_seconds", 0),
+        },
+        exchange_filters_available=symbol in filters,
+        account_state_status="unknown" if require_real_order else "simulated_default",
+        position_state_status="unknown" if require_real_order else "simulated_default",
+        indicator_nan_count=sum(
+            1
+            for key in (
+                "ema_fast_5m",
+                "ema_slow_5m",
+                "ema_fast_1h",
+                "ema_slow_1h",
+                "rsi14_5m",
+                "atr14_5m",
+                "volume_ratio_5m",
+            )
+            if snapshot.get(key) is None
+        ),
+        kline_count=min(len(frames[(symbol, "5m")]), len(frames[(symbol, "1h")])),
+        for_real_order=require_real_order and settings.order_execution_enabled,
+    )
+    payload = data_quality.model_dump(mode="json")
+    stage.update(
+        {
+            "ok": data_quality.overall_status != DataQualitySeverity.CRITICAL,
+            "overall_status": data_quality.overall_status.value,
+            "safe_for_signal_review": data_quality.safe_for_signal_review,
+            "safe_for_order": data_quality.safe_for_order,
+            "issues": payload["issues"],
+            "reason_codes": data_quality.reason_codes,
+        }
+    )
+    report["stages"].append(stage)
+    return payload
 
 
 async def _stage3_ai(

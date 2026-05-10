@@ -370,6 +370,20 @@ async def runtime_audits_run(
     )
 
 
+@router.get("/runtime/data-quality/latest")
+def runtime_data_quality_latest(
+    manager: RuntimeTaskManager = Depends(runtime_manager),
+) -> dict[str, object]:
+    return manager.latest_data_quality()
+
+
+@router.post("/runtime/data-quality/check")
+async def runtime_data_quality_check(
+    manager: RuntimeTaskManager = Depends(runtime_manager),
+) -> dict[str, object]:
+    return await manager.run_data_quality_check()
+
+
 def _audit_row(row: PipelineAudit) -> dict[str, object]:
     return {
         "id": row.id,

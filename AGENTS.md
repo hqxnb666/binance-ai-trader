@@ -65,6 +65,18 @@ This repository is a trading system. Treat safety controls as production-critica
 56. Auditor code must not modify `.env`, risk config, strategy config, or Live Trading settings.
 57. Audit reports in `reports/audits/*.json` must not be committed.
 58. Auditor schema, context, runtime, or API changes must add or update tests.
+59. DataQualityGate must remain a read-only blocking/degrading gate; it must not call broker order
+    methods, OpenAI order paths, Codex, or config writers.
+60. DataQualityGate failures may only reduce permissions or require human review; they must never
+    relax RiskEngine, exchange filters, account checks, or order execution flags.
+61. Critical DataQualityGate results must block StrategyPlanner, SignalReview, and OrderManager
+    entry points unless a human explicitly changes the documented safety policy and tests.
+62. Real Testnet order paths must require user stream, account state, position state, and exchange
+    filters to be available.
+63. Dry-run may tolerate unknown data only when it is explicitly marked degraded or unknown.
+64. Data quality reports in `reports/data_quality/*.json` must not be committed.
+65. DataQualityGate schema, runtime, smoke-test, diagnostics, or API changes must add or update
+    tests.
 
 Default assumption: this project is Testnet-only unless a human deliberately enables Live mode
 through both environment variables and checked configuration.

@@ -70,6 +70,11 @@ class SystemAuditor:
             "report_type": report_type.value,
             "time_window_start": window_start.isoformat(),
             "time_window_end": now.isoformat(),
+            "output_limits": {
+                "max_issues": self.settings.system_auditor_max_issues,
+                "max_evidence_per_issue": self.settings.system_auditor_max_evidence_per_issue,
+                "max_text_chars": self.settings.system_auditor_max_text_chars,
+            },
             "auditor_permissions": _forced_read_only_permissions(),
         }
         if self.deep and not self.settings.enable_deep_auditor:
@@ -119,13 +124,16 @@ class SystemAuditor:
             if not isinstance(report, TradingIssueReport):
                 msg = "SystemAuditor returned an object that did not match schema"
                 raise ValueError(msg)
-            report = report.model_copy(
-                update={
-                    "model": self.model,
-                    "input_hash": _hash_json(payload),
-                    "output_hash": _hash_json(report.model_dump(mode="json")),
-                }
+            report = normalize_trading_issue_report(
+                report.model_copy(
+                    update={
+                        "model": self.model,
+                        "input_hash": _hash_json(payload),
+                    }
+                ),
+                self.settings,
             )
+            report = _with_output_hash(report)
             return SystemAuditResult(
                 report=report,
                 schema_valid=True,
@@ -173,6 +181,7 @@ class SystemAuditor:
             title=title,
             reason=reason,
             input_hash=_hash_json(input_payload),
+            max_text_chars=self.settings.system_auditor_max_text_chars,
         )
         return SystemAuditResult(
             report=report,
@@ -195,13 +204,17 @@ def fallback_audit_report(
     title: str,
     reason: str,
     input_hash: str | None,
+    max_text_chars: int = 600,
 ) -> TradingIssueReport:
+    max_chars = max(80, max_text_chars)
+    safe_reason = _safe_reason(reason, max_chars=max_chars)
+    safe_title = _clip_text(title, max_chars)
     issue = AuditIssue(
         severity=severity,
         category=category,
-        title=title,
-        evidence=[_safe_reason(reason)],
-        suspected_root_cause=_safe_reason(reason),
+        title=safe_title,
+        evidence=[safe_reason],
+        suspected_root_cause=safe_reason,
         recommended_human_action="Manual human review is required before changing code or config.",
         requires_codex_change=False,
         auto_fix_allowed=False,
@@ -219,18 +232,76 @@ def fallback_audit_report(
         time_window_start=window_start,
         time_window_end=window_end,
         overall_status=overall_status,
-        summary=title,
+        summary=safe_title,
         issues=[issue],
         recommended_next_human_steps=[
             "Review the audit report manually.",
             "Do not change trading configuration without explicit human approval.",
         ],
+        report_truncated=len(reason) > max_chars or len(title) > max_chars,
         do_not_auto_modify=True,
         model=model,
         input_hash=input_hash,
         output_hash=None,
     )
-    return report.model_copy(update={"output_hash": _hash_json(report.model_dump(mode="json"))})
+    return _with_output_hash(report)
+
+
+def normalize_trading_issue_report(
+    report: TradingIssueReport,
+    settings: Settings,
+) -> TradingIssueReport:
+    max_issues = max(settings.system_auditor_max_issues, 1)
+    max_evidence = max(settings.system_auditor_max_evidence_per_issue, 1)
+    max_chars = max(settings.system_auditor_max_text_chars, 80)
+    truncated = report.report_truncated
+    issues: list[AuditIssue] = []
+    if len(report.issues) > max_issues:
+        truncated = True
+    for issue in report.issues[:max_issues]:
+        if len(issue.evidence) > max_evidence:
+            truncated = True
+        clipped_evidence = []
+        for item in issue.evidence[:max_evidence]:
+            clipped, did_clip = _clip_text_with_flag(item, max_chars)
+            truncated = truncated or did_clip
+            clipped_evidence.append(clipped)
+        title, title_clipped = _clip_text_with_flag(issue.title, max_chars)
+        root_cause, root_clipped = _clip_text_with_flag(issue.suspected_root_cause, max_chars)
+        action, action_clipped = _clip_text_with_flag(issue.recommended_human_action, max_chars)
+        truncated = truncated or title_clipped or root_clipped or action_clipped
+        issues.append(
+            issue.model_copy(
+                update={
+                    "title": title,
+                    "evidence": clipped_evidence,
+                    "suspected_root_cause": root_cause,
+                    "recommended_human_action": action,
+                    "auto_fix_allowed": False,
+                    "can_modify_config": False,
+                    "can_modify_strategy": False,
+                    "can_place_order": False,
+                }
+            )
+        )
+    summary, summary_clipped = _clip_text_with_flag(report.summary, max_chars)
+    truncated = truncated or summary_clipped
+    steps: list[str] = []
+    for step in report.recommended_next_human_steps[:max_issues]:
+        clipped_step, step_clipped = _clip_text_with_flag(step, max_chars)
+        truncated = truncated or step_clipped
+        steps.append(clipped_step)
+    if len(report.recommended_next_human_steps) > max_issues:
+        truncated = True
+    return report.model_copy(
+        update={
+            "summary": summary,
+            "issues": issues,
+            "recommended_next_human_steps": steps,
+            "report_truncated": truncated,
+            "do_not_auto_modify": True,
+        }
+    )
 
 
 def _forced_read_only_permissions() -> dict[str, bool]:
@@ -248,5 +319,23 @@ def _hash_json(payload: dict[str, Any]) -> str:
     return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
 
-def _safe_reason(value: str) -> str:
-    return value.replace("sk-", "[REDACTED]-")[:1000]
+def _with_output_hash(report: TradingIssueReport) -> TradingIssueReport:
+    unhashed = report.model_copy(update={"output_hash": None})
+    return unhashed.model_copy(update={"output_hash": _hash_json(unhashed.model_dump(mode="json"))})
+
+
+def _safe_reason(value: str, *, max_chars: int) -> str:
+    return _clip_text(value.replace("sk-", "[REDACTED]-"), max_chars)
+
+
+def _clip_text(value: str, max_chars: int) -> str:
+    return _clip_text_with_flag(value, max_chars)[0]
+
+
+def _clip_text_with_flag(value: str, max_chars: int) -> tuple[str, bool]:
+    text = str(value)
+    if len(text) <= max_chars:
+        return text, False
+    suffix = " [truncated]"
+    keep = max(max_chars - len(suffix), 1)
+    return text[:keep].rstrip() + suffix, True
