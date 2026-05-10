@@ -24,6 +24,18 @@ def _decimal_filter(
     return Decimal(default)
 
 
+def _decimal_filter_any(
+    filters: list[dict[str, Any]],
+    candidates: list[tuple[str, str]],
+    default: str,
+) -> Decimal:
+    for filter_type, key in candidates:
+        for item in filters:
+            if item.get("filterType") == filter_type and item.get(key) is not None:
+                return Decimal(str(item[key]))
+    return Decimal(default)
+
+
 def parse_symbol_filters(exchange_info: dict[str, Any], symbol: str) -> SymbolFilters:
     symbol = symbol.upper()
     for item in exchange_info.get("symbols", []):
@@ -36,7 +48,11 @@ def parse_symbol_filters(exchange_info: dict[str, Any], symbol: str) -> SymbolFi
             tick_size=_decimal_filter(filters, "PRICE_FILTER", "tickSize", "0.00000001"),
             step_size=_decimal_filter(filters, "LOT_SIZE", "stepSize", "0.00000001"),
             min_qty=_decimal_filter(filters, "LOT_SIZE", "minQty", "0"),
-            min_notional=_decimal_filter(filters, "MIN_NOTIONAL", "minNotional", "0"),
+            min_notional=_decimal_filter_any(
+                filters,
+                [("MIN_NOTIONAL", "minNotional"), ("NOTIONAL", "minNotional")],
+                "0",
+            ),
             max_qty=max_qty if max_qty > 0 else None,
         )
     msg = f"Symbol filters not found for {symbol}"

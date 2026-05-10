@@ -70,9 +70,12 @@ class BinanceRestClient:
             if not self.api_key:
                 raise BinanceAPIError(-2015, "Missing Binance API key")
             headers["X-MBX-APIKEY"] = self.api_key
+        params_for_http: Mapping[str, Any] | list[tuple[str, Any]] = (
+            list(request_params.items()) if signed else request_params
+        )
         try:
             response = await self._client.request(
-                method.upper(), path, params=request_params, headers=headers
+                method.upper(), path, params=params_for_http, headers=headers
             )
         except httpx.HTTPError as exc:
             raise BinanceNetworkError(str(exc)) from exc

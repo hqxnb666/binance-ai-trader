@@ -52,6 +52,7 @@ async def run_diagnostics(*, include_openai: bool = True) -> dict[str, Any]:
         "openai_budget": _openai_budget(settings),
         "latest_audit_summary": _latest_audit_summary(),
         "latest_data_quality_summary": _latest_data_quality_summary(settings),
+        "signed_request_diagnostics_available": True,
         "readiness": _readiness(environment, connectivity, settings.order_execution_enabled),
         "recommended_next_action": _recommend(environment, connectivity),
         "created_at": datetime.now(UTC).isoformat(),

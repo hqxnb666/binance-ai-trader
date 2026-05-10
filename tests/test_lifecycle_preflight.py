@@ -76,3 +76,19 @@ def test_lifecycle_preflight_can_pass_before_manual_risk_decision() -> None:
         runtime_kill_switch_enabled=False,
     )
     assert errors == []
+
+
+def test_lifecycle_rejects_signature_preflight_failure() -> None:
+    errors = validate_lifecycle_safety(
+        _settings_ready(),
+        confirmed=True,
+        data_quality_safe_for_real_order=True,
+        account_state_status="OK",
+        position_state_status="OK",
+        runtime_kill_switch_enabled=False,
+        signed_account_ok=False,
+        signed_test_order_ok=False,
+        signed_request_error_code=-1022,
+    )
+    assert any("BINANCE_SIGNATURE_INVALID" in error for error in errors)
+    assert any("Signed GET account" in error for error in errors)

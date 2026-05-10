@@ -73,6 +73,28 @@ async def _fake_rest_ok(broker, settings, report):
     return {"rest_ok": True, "filters_ok": True}, {"BTCUSDT": Decimal("100000")}
 
 
+async def _fake_signed_ok(settings):
+    return {
+        "signed_account_status": "OK",
+        "test_order_status": "OK",
+        "signed_account_error_code": None,
+        "test_order_error_code": None,
+        "signed_account_error_message_sanitized": None,
+        "test_order_error_message_sanitized": None,
+    }
+
+
+async def _fake_signed_invalid(settings):
+    return {
+        "signed_account_status": "FAILED",
+        "test_order_status": "SKIPPED",
+        "signed_account_error_code": -1022,
+        "test_order_error_code": None,
+        "signed_account_error_message_sanitized": "Signature for this request is not valid.",
+        "test_order_error_message_sanitized": None,
+    }
+
+
 @pytest.mark.asyncio
 async def test_readiness_json_shape_no_keys(monkeypatch) -> None:
     monkeypatch.setattr(readiness, "_check_rest_and_filters", _fake_rest_ok)
@@ -90,6 +112,7 @@ async def test_readiness_json_shape_no_keys(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_dry_run_can_be_ready_for_dry_run(monkeypatch) -> None:
     monkeypatch.setattr(readiness, "_check_rest_and_filters", _fake_rest_ok)
+    monkeypatch.setattr(readiness, "_check_signed_preflight", _fake_signed_ok)
     monkeypatch.setattr(readiness, "AccountPositionService", FakeService)
     report = await readiness.build_readiness_report(load_settings())
     assert report["ready_for_dry_run"] is True
@@ -99,6 +122,7 @@ async def test_dry_run_can_be_ready_for_dry_run(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_kill_switch_blocks_real_readiness(monkeypatch) -> None:
     monkeypatch.setattr(readiness, "_check_rest_and_filters", _fake_rest_ok)
+    monkeypatch.setattr(readiness, "_check_signed_preflight", _fake_signed_ok)
     monkeypatch.setattr(readiness, "AccountPositionService", FakeService)
     settings = load_settings().model_copy(
         update={
@@ -119,6 +143,7 @@ async def test_kill_switch_blocks_real_readiness(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_account_unknown_blocks_real_readiness(monkeypatch) -> None:
     monkeypatch.setattr(readiness, "_check_rest_and_filters", _fake_rest_ok)
+    monkeypatch.setattr(readiness, "_check_signed_preflight", _fake_signed_ok)
 
     class UnknownService(FakeService):
         def __init__(self, *args, **kwargs):
@@ -136,3 +161,20 @@ async def test_account_unknown_blocks_real_readiness(monkeypatch) -> None:
     report = await readiness.build_readiness_report(settings)
     assert report["ready_for_real_testnet_order"] is False
     assert "Account state is not OK" in report["blockers"]
+
+
+@pytest.mark.asyncio
+async def test_signature_error_blocks_test_order_readiness(monkeypatch) -> None:
+    monkeypatch.setattr(readiness, "_check_rest_and_filters", _fake_rest_ok)
+    monkeypatch.setattr(readiness, "_check_signed_preflight", _fake_signed_invalid)
+    monkeypatch.setattr(readiness, "AccountPositionService", FakeService)
+    settings = load_settings().model_copy(
+        update={
+            "binance_testnet_api_key": SecretStr("k"),
+            "binance_testnet_api_secret": SecretStr("s"),
+        }
+    )
+    report = await readiness.build_readiness_report(settings)
+    assert report["ready_for_test_order_only"] is False
+    assert report["signed_request_error_code"] == -1022
+    assert "BINANCE_SIGNATURE_INVALID" in report["blockers"]

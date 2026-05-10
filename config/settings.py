@@ -21,6 +21,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 def _env_secret(name: str) -> SecretStr | None:
     value = os.getenv(name)
+    value = value.strip() if value else value
     if not value or value.startswith("your_"):
         return None
     return SecretStr(value)

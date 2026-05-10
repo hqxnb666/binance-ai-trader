@@ -7,6 +7,7 @@ import pytest
 
 import scripts.smoke_test_testnet as smoke
 from ai.schemas import SignalReview
+from binance_client.errors import BinanceAPIError
 from binance_client.exchange_info import SymbolFilters
 from strategies.base import StrategySignalPayload
 
@@ -75,6 +76,25 @@ async def test_smoke_default_does_not_call_real_order_stage(monkeypatch) -> None
     report = await smoke.smoke_test()
     assert report["status"] == "TEST_ORDER_COMPLETE"
     assert called_real_order is False
+
+
+@pytest.mark.asyncio
+async def test_smoke_signature_error_marks_test_order_signature_failed(monkeypatch) -> None:
+    report = {"stages": []}
+
+    class Broker:
+        async def test_order(self, request):
+            raise BinanceAPIError(-1022, "Signature for this request is not valid.")
+
+    ok = await smoke._stage5_test_order(  # noqa: SLF001 - direct stage unit test
+        report,
+        Broker(),
+        _signal(),
+        SimpleNamespace(adjusted_entry_price=Decimal("100"), adjusted_quantity=Decimal("0.1")),
+    )
+    assert ok is False
+    assert report["test_order_failure_status"] == "TEST_ORDER_SIGNATURE_FAILED"
+    assert report["stages"][0]["error_code"] == -1022
 
 
 def _async(value):

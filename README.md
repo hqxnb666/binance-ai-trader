@@ -429,6 +429,28 @@ curl http://127.0.0.1:8000/runtime/health
 `/runtime/health` includes a cached `network_readiness` summary and does not call the network on
 every request.
 
+## Binance Signature Diagnostics
+
+Binance error `-1022` means the signed request did not validate. Common causes are using the wrong
+Testnet secret, hidden whitespace in environment variables, timestamp/recvWindow issues, or a
+client bug where the signed query string differs from the transmitted query string.
+
+Use the signed diagnostics script before any real Testnet lifecycle test:
+
+```powershell
+python scripts/diagnose_binance_signed_requests.py --testnet --json
+python scripts/diagnose_binance_signed_requests.py --testnet --include-test-order --json
+python scripts/diagnose_binance_signed_requests.py --testnet --save-report
+```
+
+This script may call `GET /api/v3/account` and, with `--include-test-order`, Binance
+`POST /api/v3/order/test`. The `order/test` endpoint validates parameters and signatures but does
+not enter the matching engine and does not create a real order. The script never calls
+`POST /api/v3/order`.
+
+Do not paste API keys, API secrets, full signed query strings, or generated JSON reports into issue
+trackers or prompts. Real diagnostics reports under `reports/diagnostics/*.json` are ignored by git.
+
 ## Tests
 
 ```powershell

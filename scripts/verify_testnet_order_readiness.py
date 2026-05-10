@@ -19,6 +19,7 @@ from data_quality.gate import DataQualityGate  # noqa: E402
 from journal.database import SessionLocal, init_db  # noqa: E402
 from journal.strategy_plan_store import get_active_strategy_plan  # noqa: E402
 from risk.circuit_breaker import CircuitBreaker  # noqa: E402
+from scripts.diagnose_binance_signed_requests import run_signed_diagnostics  # noqa: E402
 
 REPORT_DIR = ROOT / "reports" / "readiness"
 
@@ -38,6 +39,10 @@ async def build_readiness_report(settings: Settings | None = None) -> dict[str, 
         "testnet_rest_ok": False,
         "testnet_user_stream_possible": False,
         "exchange_filters_ok": False,
+        "signed_account_ok": False,
+        "signed_test_order_ok": False,
+        "signed_request_error_code": None,
+        "signed_request_error_message_sanitized": None,
         "account_state_status": "UNKNOWN",
         "position_state_status": "UNKNOWN",
         "data_quality_status": "UNKNOWN",
@@ -79,6 +84,17 @@ async def build_readiness_report(settings: Settings | None = None) -> dict[str, 
             settings.risk_config.kill_switch_enabled or kill_switch_enabled
         )
         report["strategy_plan_status"] = _strategy_plan_status(active_plan)
+        signed_report = await _check_signed_preflight(settings)
+        report["signed_account_ok"] = signed_report.get("signed_account_status") == "OK"
+        report["signed_test_order_ok"] = signed_report.get("test_order_status") == "OK"
+        report["signed_request_error_code"] = (
+            signed_report.get("signed_account_error_code")
+            or signed_report.get("test_order_error_code")
+        )
+        report["signed_request_error_message_sanitized"] = (
+            signed_report.get("signed_account_error_message_sanitized")
+            or signed_report.get("test_order_error_message_sanitized")
+        )
         dq_snapshot = DataQualityGate(settings).evaluate_runtime_health(
             runtime_health={
                 "state": "readiness_check",
@@ -104,7 +120,12 @@ async def build_readiness_report(settings: Settings | None = None) -> dict[str, 
         report["data_quality_status"] = dq_snapshot.overall_status.value
         report["data_quality_safe_for_real_order"] = dq_snapshot.safe_for_real_testnet_order
         report["budget_status"] = "OK"
-        _compute_readiness(report, settings, dq_snapshot.safe_for_real_testnet_order)
+        _compute_readiness(
+            report,
+            settings,
+            dq_snapshot.safe_for_real_testnet_order,
+            dq_snapshot.overall_status.value != "CRITICAL",
+        )
         return report
     finally:
         await broker.client.aclose()
@@ -141,8 +162,22 @@ async def _check_rest_and_filters(
         return {"rest_ok": False, "filters_ok": False}, latest_prices
 
 
+async def _check_signed_preflight(settings: Settings) -> dict[str, Any]:
+    if not settings.binance_testnet_api_key or not settings.binance_testnet_api_secret:
+        return {
+            "signed_account_status": "SKIPPED",
+            "test_order_status": "SKIPPED",
+            "signed_account_error_code": None,
+            "test_order_error_code": None,
+        }
+    return await run_signed_diagnostics(settings, include_test_order=True)
+
+
 def _compute_readiness(
-    report: dict[str, Any], settings: Settings, data_quality_safe_for_real_order: bool
+    report: dict[str, Any],
+    settings: Settings,
+    data_quality_safe_for_real_order: bool,
+    data_quality_not_critical: bool,
 ) -> None:
     blockers: list[str] = []
     warnings: list[str] = report["warnings"]
@@ -154,7 +189,13 @@ def _compute_readiness(
         settings.trading_mode == "testnet" and live_disabled and settings.trading_dry_run
     )
     report["ready_for_test_order_only"] = (
-        settings.trading_mode == "testnet" and live_disabled and keys and rest and filters
+        settings.trading_mode == "testnet"
+        and live_disabled
+        and keys
+        and rest
+        and filters
+        and report["signed_account_ok"]
+        and data_quality_not_critical
     )
     if settings.trading_mode != "testnet":
         blockers.append("TRADING_MODE must be testnet")
@@ -166,6 +207,12 @@ def _compute_readiness(
         blockers.append("Binance Testnet REST is not available")
     if not filters:
         blockers.append("Exchange filters are not available")
+    if report["signed_request_error_code"] == -1022:
+        blockers.append("BINANCE_SIGNATURE_INVALID")
+    if not report["signed_account_ok"]:
+        blockers.append("Signed GET account preflight failed")
+    if not report["signed_test_order_ok"]:
+        blockers.append("Signed POST order/test preflight failed")
     if not settings.order_execution_enabled:
         blockers.append("ORDER_EXECUTION_ENABLED=false")
     if settings.trading_dry_run:

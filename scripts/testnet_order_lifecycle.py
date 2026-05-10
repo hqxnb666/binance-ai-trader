@@ -26,6 +26,7 @@ from orders.order_manager import OrderManager  # noqa: E402
 from orders.reconciliation import reconcile_open_orders  # noqa: E402
 from risk.circuit_breaker import CircuitBreaker  # noqa: E402
 from risk.order_filter_validator import OrderFilterValidator, floor_to_step  # noqa: E402
+from scripts.diagnose_binance_signed_requests import run_signed_diagnostics  # noqa: E402
 from strategies.base import StrategySignalPayload  # noqa: E402
 
 REPORT_DIR = ROOT / "reports" / "order_lifecycle"
@@ -40,6 +41,9 @@ def validate_lifecycle_safety(
     account_state_status: str = "UNKNOWN",
     position_state_status: str = "UNKNOWN",
     runtime_kill_switch_enabled: bool = False,
+    signed_account_ok: bool = True,
+    signed_test_order_ok: bool = True,
+    signed_request_error_code: int | None = None,
 ) -> list[str]:
     errors: list[str] = []
     if not confirmed:
@@ -62,6 +66,12 @@ def validate_lifecycle_safety(
         errors.append("Position state must be OK")
     if not data_quality_safe_for_real_order:
         errors.append("DataQualityGate must be safe_for_real_testnet_order")
+    if signed_request_error_code == -1022:
+        errors.append("Signed request preflight failed: BINANCE_SIGNATURE_INVALID")
+    if not signed_account_ok:
+        errors.append("Signed GET account preflight must be OK")
+    if not signed_test_order_ok:
+        errors.append("Signed POST order/test preflight must be OK")
     return errors
 
 
@@ -132,6 +142,11 @@ async def run_lifecycle(
             if all(position.status.value == "OK" for position in account_position.positions)
             else "UNKNOWN"
         )
+        signed_preflight = await run_signed_diagnostics(settings, include_test_order=True)
+        signed_request_error_code = (
+            signed_preflight.get("signed_account_error_code")
+            or signed_preflight.get("test_order_error_code")
+        )
         preflight_errors = validate_lifecycle_safety(
             settings,
             confirmed=confirmed,
@@ -139,6 +154,9 @@ async def run_lifecycle(
             account_state_status=account_position.account.status.value,
             position_state_status=position_status,
             runtime_kill_switch_enabled=runtime_kill_switch_enabled,
+            signed_account_ok=signed_preflight.get("signed_account_status") == "OK",
+            signed_test_order_ok=signed_preflight.get("test_order_status") == "OK",
+            signed_request_error_code=signed_request_error_code,
         )
         report["preflight"] = {
             "account_state_status": account_position.account.status.value,
@@ -148,7 +166,15 @@ async def run_lifecycle(
                 data_quality.safe_for_real_testnet_order
             ),
             "runtime_kill_switch_enabled": runtime_kill_switch_enabled,
+            "signed_account_ok": signed_preflight.get("signed_account_status") == "OK",
+            "signed_test_order_ok": signed_preflight.get("test_order_status") == "OK",
+            "error_code": signed_request_error_code,
         }
+        signed_account_ok = report["preflight"]["signed_account_ok"]
+        signed_test_order_ok = report["preflight"]["signed_test_order_ok"]
+        report["preflight"]["signed_request_preflight"] = (
+            "OK" if signed_account_ok and signed_test_order_ok else "FAILED"
+        )
         if preflight_errors:
             report["status"] = "SAFETY_CHECK_FAILED"
             report["errors"] = preflight_errors

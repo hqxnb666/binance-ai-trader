@@ -86,6 +86,12 @@ This repository is a trading system. Treat safety controls as production-critica
 70. RiskEngine runtime state should be reused by the daemon so rate limiting and duplicate
     `client_order_id` checks remain effective during the daemon lifetime.
 71. Readiness reports in `reports/readiness/*.json` must not be committed.
+72. Binance signed request changes must keep the signed canonical query string identical to the
+    transmitted query parameters.
+73. Binance signed diagnostics may call only safe private endpoints such as `GET /api/v3/account`
+    and `POST /api/v3/order/test`; they must never call real `POST /api/v3/order`.
+74. Do not log or store API secrets, full signed query strings, or raw signatures in reports.
+75. Error `-1022` must fail closed and block Testnet order readiness until signed diagnostics pass.
 
 Default assumption: this project is Testnet-only unless a human deliberately enables Live mode
 through both environment variables and checked configuration.

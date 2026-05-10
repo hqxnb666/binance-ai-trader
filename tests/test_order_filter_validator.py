@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from binance_client.exchange_info import SymbolFilters
+from binance_client.exchange_info import SymbolFilters, parse_symbol_filters
 from risk.order_filter_validator import OrderFilterValidator
 
 
@@ -35,3 +35,21 @@ def test_min_notional_validation() -> None:
     assert validator.validate_min_notional(Decimal("100"), Decimal("0.2")).valid is True
     assert validator.validate_min_notional(Decimal("100"), Decimal("0.01")).valid is False
 
+
+def test_parse_symbol_filters_supports_notional_filter() -> None:
+    filters = parse_symbol_filters(
+        {
+            "symbols": [
+                {
+                    "symbol": "BTCUSDT",
+                    "filters": [
+                        {"filterType": "PRICE_FILTER", "tickSize": "0.10"},
+                        {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+                        {"filterType": "NOTIONAL", "minNotional": "100.00"},
+                    ],
+                }
+            ]
+        },
+        "BTCUSDT",
+    )
+    assert filters.min_notional == Decimal("100.00")

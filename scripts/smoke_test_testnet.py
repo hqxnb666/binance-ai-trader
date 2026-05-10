@@ -22,6 +22,7 @@ from ai.schemas import (  # noqa: E402
     SignalSide,
 )
 from ai.signal_reviewer import SignalReviewer  # noqa: E402
+from binance_client.errors import BinanceAPIError  # noqa: E402
 from binance_client.exchange_info import SymbolFilters, parse_symbol_filters  # noqa: E402
 from broker.base import OrderRequest  # noqa: E402
 from broker.binance_spot_testnet import BinanceSpotTestnetBroker  # noqa: E402
@@ -155,7 +156,7 @@ async def smoke_test(
                 return report
         test_order_ok = await _stage5_test_order(report, broker, signal, sized)
         if not test_order_ok or test_order_only or not allow_real_testnet_order:
-            report["status"] = "TEST_ORDER_COMPLETE"
+            report["status"] = report.get("test_order_failure_status", "TEST_ORDER_COMPLETE")
             if not allow_real_testnet_order:
                 report["real_order"] = "Skipped: --allow-real-testnet-order was not provided."
             return report
@@ -373,6 +374,23 @@ async def _stage5_test_order(
     request = _order_request(signal.symbol, signal.side, sized)
     try:
         await broker.test_order(request)
+    except BinanceAPIError as exc:
+        stage.update(
+            {
+                "ok": False,
+                "error_code": exc.code,
+                "error": exc.message,
+            }
+        )
+        if exc.code == -1022:
+            stage["status"] = "TEST_ORDER_SIGNATURE_FAILED"
+            stage["recommended_next_action"] = (
+                "Run python scripts/diagnose_binance_signed_requests.py "
+                "--testnet --include-test-order --json"
+            )
+            report["test_order_failure_status"] = "TEST_ORDER_SIGNATURE_FAILED"
+        report["stages"].append(stage)
+        return False
     except Exception as exc:  # noqa: BLE001
         stage.update({"ok": False, "error": str(exc)})
         report["stages"].append(stage)
