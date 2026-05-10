@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.2 - CI smoke test isolation fix
+
+- Fixed the smoke-test stage unit test so it mocks network diagnostics and does not depend on
+  GitHub runner network availability.
+- No runtime trading logic, broker logic, Live settings, or order execution defaults changed.
+
 ## v0.2.1 - Binance signed request diagnostics and -1022 fix
 
 - Hardened Binance signed request construction so signed canonical query parameters match the

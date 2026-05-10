@@ -19,6 +19,21 @@ async def test_smoke_default_does_not_call_real_order_stage(monkeypatch) -> None
     monkeypatch.setattr(smoke, "_config_error", lambda summary, require_openai: None)
     monkeypatch.setattr(
         smoke,
+        "run_diagnostics",
+        lambda include_openai=False: _async(
+            {
+                "environment": {"proxy_env": {"HTTP_PROXY": "absent"}},
+                "connectivity": {
+                    "binance_testnet_rest": {"status": "OK"},
+                    "binance_testnet_ws": {"status": "OK"},
+                    "openai_api": {"status": "SKIPPED"},
+                },
+                "recommended_next_action": [],
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        smoke,
         "_stage1_rest",
         lambda report, broker, settings: _async(
             (
