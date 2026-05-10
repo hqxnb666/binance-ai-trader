@@ -38,6 +38,7 @@ from orders.order_manager import OrderManager  # noqa: E402
 from orders.reconciliation import reconcile_open_orders  # noqa: E402
 from risk.position_sizer import PositionSizer  # noqa: E402
 from risk.risk_engine import AccountState, MarketHealth, PositionState, RiskEngine  # noqa: E402
+from scripts.verify_testnet_order_readiness import build_readiness_report  # noqa: E402
 from strategies.base import StrategySignalPayload  # noqa: E402
 from strategies.ema_trend import EmaTrendStrategy  # noqa: E402
 
@@ -147,6 +148,11 @@ async def smoke_test(
         if not risk_decision.approved:
             report["status"] = "RISK_REJECTED"
             return report
+        if test_order_only or allow_real_testnet_order:
+            readiness_ok = await _readiness_gate(report, allow_real_testnet_order)
+            if not readiness_ok:
+                report["status"] = "READINESS_BLOCKED"
+                return report
         test_order_ok = await _stage5_test_order(report, broker, signal, sized)
         if not test_order_ok or test_order_only or not allow_real_testnet_order:
             report["status"] = "TEST_ORDER_COMPLETE"
@@ -267,6 +273,8 @@ def _stage2_5_data_quality(
             "overall_status": data_quality.overall_status.value,
             "safe_for_signal_review": data_quality.safe_for_signal_review,
             "safe_for_order": data_quality.safe_for_order,
+            "account_state_status": data_quality.account_state_status,
+            "position_state_status": data_quality.position_state_status,
             "issues": payload["issues"],
             "reason_codes": data_quality.reason_codes,
         }
@@ -381,6 +389,30 @@ async def _stage5_test_order(
     )
     report["stages"].append(stage)
     return True
+
+
+async def _readiness_gate(report: dict[str, Any], allow_real_testnet_order: bool) -> bool:
+    stage = _stage("Stage 4.5: Testnet order readiness")
+    readiness = await build_readiness_report()
+    required_key = (
+        "ready_for_real_testnet_order"
+        if allow_real_testnet_order
+        else "ready_for_test_order_only"
+    )
+    ok = bool(readiness.get(required_key))
+    stage.update(
+        {
+            "ok": ok,
+            "required": required_key,
+            "ready_for_dry_run": readiness.get("ready_for_dry_run"),
+            "ready_for_test_order_only": readiness.get("ready_for_test_order_only"),
+            "ready_for_real_testnet_order": readiness.get("ready_for_real_testnet_order"),
+            "blockers": readiness.get("blockers", []),
+            "warnings": readiness.get("warnings", []),
+        }
+    )
+    report["stages"].append(stage)
+    return ok
 
 
 async def _stage6_real_testnet_order(

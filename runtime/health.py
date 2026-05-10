@@ -28,4 +28,7 @@ class RuntimeHealth(BaseModel):
     budget_status: dict[str, Any] = Field(default_factory=dict)
     audit_status: dict[str, Any] = Field(default_factory=dict)
     data_quality_status: dict[str, Any] = Field(default_factory=dict)
+    account_position_status: dict[str, Any] = Field(default_factory=dict)
+    risk_runtime_status: dict[str, Any] = Field(default_factory=dict)
+    kill_switch_state: dict[str, Any] = Field(default_factory=dict)
     health_warning: bool = False

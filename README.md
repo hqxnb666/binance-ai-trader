@@ -275,6 +275,35 @@ curl -X POST http://127.0.0.1:8000/runtime/testnet/stop-dry-run
 `ORDER_EXECUTION_ENABLED=false` means no real Testnet order is submitted even if RiskEngine
 approves. Set it to `true` only when you deliberately want real Binance Spot Testnet orders.
 
+## Account, Position, And Runtime Risk State
+
+The runtime uses `AccountPositionService` to read Binance Spot Testnet account balances through
+`broker.get_account()`, parse BTC/ETH/USDT balances, estimate position value from latest prices, and
+produce explicit `RuntimeAccountState` / `RuntimePositionState` snapshots. Unknown or simulated
+values are labeled with `source=unknown` or `source=simulated_default`; dry-run balances are not
+presented as real account data.
+
+Dry-run may continue with simulated defaults, but real Testnet order paths require Testnet mode,
+Live disabled, DataQualityGate safe state, account and position state `OK`, user stream available,
+exchange filters available, runtime/config kill switches off, RiskEngine approval,
+`ORDER_EXECUTION_ENABLED=true`, and `TRADING_DRY_RUN=false`.
+
+The daemon reuses one RiskEngine instance for its lifetime so order frequency and duplicate
+`client_order_id` state persist across evaluations. The database-backed kill switch from
+`/control/kill-switch/on` is passed into RiskEngine and blocks runtime order paths.
+
+Readiness-only check:
+
+```powershell
+python scripts/verify_testnet_order_readiness.py --json
+python scripts/verify_testnet_order_readiness.py --save-report
+```
+
+Reports are written to `reports/readiness/` and generated JSON is ignored by git.
+
+This project intentionally does not implement `HumanApprovalGate`, pending order intents, or manual
+approval APIs.
+
 ## Start Testnet Daemon From CLI
 
 ```powershell
@@ -307,6 +336,8 @@ Smoke test behavior:
   `DATA_QUALITY_BLOCKED`.
 - Stage 3 calls OpenAI only with `--with-ai`; otherwise it uses a local schema-valid no-ai review.
 - Stage 4 runs RiskEngine.
+- Stage 4.5 runs Testnet order readiness when `--test-order-only` or
+  `--allow-real-testnet-order` is requested.
 - Stage 5 calls Binance `test_order` only after RiskEngine approval.
 - Stage 6 can submit a small LIMIT Testnet order only with `--allow-real-testnet-order`.
 - With Testnet connectivity it checks exchangeInfo, BTCUSDT/ETHUSDT filters, price, 5m/1h klines,
@@ -319,9 +350,10 @@ Reports are written to `reports/smoke_tests/`.
 
 ## Testnet Order Lifecycle
 
-The lifecycle script validates a manually requested small LIMIT order path. It never uses the Live
-broker and refuses to run unless Testnet mode, Live disabled, `ORDER_EXECUTION_ENABLED=true`, and
-an explicit confirmation flag are all present.
+The lifecycle script validates a manually requested small LIMIT order path. It is not the full AI
+runtime trading path. It never uses the Live broker and refuses to run unless Testnet mode, Live
+disabled, `ORDER_EXECUTION_ENABLED=true`, `TRADING_DRY_RUN=false`, kill switch off, account/position
+`OK`, DataQualityGate real-order readiness, and an explicit confirmation flag are all present.
 
 ```powershell
 python scripts/testnet_order_lifecycle.py --symbol BTCUSDT --side BUY --i-understand-this-is-testnet
@@ -330,6 +362,8 @@ python scripts/testnet_order_lifecycle.py --symbol BTCUSDT --side BUY --i-unders
 It prints an order summary before sending anything, calls `test_order`, submits a LIMIT Testnet
 order, listens for User Data Stream events, cancels if needed, reconciles with REST, and writes a
 report to `reports/order_lifecycle/`.
+
+Use `verify_testnet_order_readiness.py` before attempting any manual small Testnet order.
 
 ## Backtesting
 

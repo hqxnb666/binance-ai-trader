@@ -74,6 +74,7 @@ class RiskEngine:
         order_quantity: Decimal,
         trading_mode: Literal["testnet", "live"],
         client_order_id: str | None = None,
+        runtime_kill_switch_enabled: bool = False,
     ) -> RiskDecisionPayload:
         risk = self.settings.risk_config
         checks = {
@@ -83,6 +84,9 @@ class RiskEngine:
             "market_health": market_health.model_dump(mode="json"),
             "account": account.model_dump(mode="json"),
             "position": position.model_dump(mode="json"),
+            "runtime_kill_switch_enabled": runtime_kill_switch_enabled,
+            "orders_last_minute": self._orders_last_minute(),
+            "seen_client_order_id_count": len(self.seen_client_order_ids),
         }
         rejection = self._first_rejection(
             risk=risk,
@@ -97,6 +101,7 @@ class RiskEngine:
             order_quantity=order_quantity,
             trading_mode=trading_mode,
             client_order_id=client_order_id,
+            runtime_kill_switch_enabled=runtime_kill_switch_enabled,
         )
         if rejection:
             return RiskDecisionPayload(
@@ -130,6 +135,7 @@ class RiskEngine:
         order_quantity: Decimal,
         trading_mode: Literal["testnet", "live"],
         client_order_id: str | None,
+        runtime_kill_switch_enabled: bool,
     ) -> str | None:
         if trading_mode not in {"testnet", "live"}:
             return "invalid trading mode"
@@ -139,6 +145,8 @@ class RiskEngine:
             return "live trading disabled"
         if risk.kill_switch_enabled:
             return "kill switch enabled"
+        if runtime_kill_switch_enabled:
+            return "runtime kill switch enabled"
         if account.daily_loss_pct <= -abs(risk.max_daily_loss_pct):
             return "daily loss limit exceeded"
         if account.consecutive_losses >= risk.max_consecutive_losses:
@@ -190,3 +198,10 @@ class RiskEngine:
         cutoff = datetime.now(UTC) - timedelta(minutes=1)
         self.order_timestamps = [item for item in self.order_timestamps if item >= cutoff]
         return len(self.order_timestamps)
+
+    def runtime_state(self) -> dict[str, Any]:
+        return {
+            "orders_last_minute": self._orders_last_minute(),
+            "seen_client_order_id_count": len(self.seen_client_order_ids),
+            "risk_engine_reused": True,
+        }

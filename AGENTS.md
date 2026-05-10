@@ -77,6 +77,15 @@ This repository is a trading system. Treat safety controls as production-critica
 64. Data quality reports in `reports/data_quality/*.json` must not be committed.
 65. DataQualityGate schema, runtime, smoke-test, diagnostics, or API changes must add or update
     tests.
+66. Do not add `HumanApprovalGate`, pending approval intents, or manual approval APIs unless a
+    human explicitly reverses the current scope.
+67. AccountPositionService must remain read-only and must never call broker order methods.
+68. Runtime real Testnet order paths must require account state `OK`, position state `OK`, user
+    stream availability, exchange filters, DataQualityGate safe state, and kill switch off.
+69. The database kill switch and config kill switch must both be honored by runtime RiskEngine.
+70. RiskEngine runtime state should be reused by the daemon so rate limiting and duplicate
+    `client_order_id` checks remain effective during the daemon lifetime.
+71. Readiness reports in `reports/readiness/*.json` must not be committed.
 
 Default assumption: this project is Testnet-only unless a human deliberately enables Live mode
 through both environment variables and checked configuration.

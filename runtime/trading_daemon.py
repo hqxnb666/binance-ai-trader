@@ -12,6 +12,8 @@ import pandas as pd
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from account.schemas import AccountPositionSnapshot, RuntimeAccountState, RuntimePositionState
+from account.state_service import AccountPositionService
 from ai.audit_schemas import AuditReportType
 from ai.budget_guard import budget_status
 from ai.context_builder import (
@@ -60,6 +62,7 @@ from journal.strategy_plan_store import (
 )
 from orders.order_manager import OrderManager, generate_client_order_id
 from orders.reconciliation import reconcile_open_orders
+from risk.circuit_breaker import CircuitBreaker
 from risk.position_sizer import PositionSizer
 from risk.risk_engine import AccountState, MarketHealth, PositionState, RiskEngine
 from runtime.daemon_state import DaemonState, RuntimeLogBuffer
@@ -107,6 +110,13 @@ class TestnetTradingDaemon:
             if order_execution_enabled is None
             else order_execution_enabled
         )
+        self.account_position_service = AccountPositionService(
+            settings=settings,
+            broker=self.broker,
+            dry_run=self.dry_run,
+            order_execution_enabled=self.order_execution_enabled,
+        )
+        self.risk_engine = RiskEngine(settings)
         self.state = DaemonState.STOPPED
         self.stop_event = asyncio.Event()
         self.tasks: list[asyncio.Task[None]] = []
@@ -130,6 +140,9 @@ class TestnetTradingDaemon:
         self.last_strategy_plan_at: datetime | None = None
         self.latest_audit_report: dict[str, Any] | None = None
         self.latest_data_quality_snapshot: DataQualitySnapshot | None = None
+        self.latest_account_state: RuntimeAccountState | None = None
+        self.latest_position_states: dict[str, RuntimePositionState] = {}
+        self.latest_account_position_snapshot: AccountPositionSnapshot | None = None
 
     async def start(self) -> dict[str, Any]:
         if self.state in {DaemonState.STARTING, DaemonState.RUNNING}:
@@ -218,6 +231,9 @@ class TestnetTradingDaemon:
             budget_status=self._budget_status(),
             audit_status=audit_status,
             data_quality_status=data_quality_status,
+            account_position_status=self._account_position_status(),
+            risk_runtime_status=self._risk_runtime_status(),
+            kill_switch_state=self._kill_switch_state(),
             health_warning=health_warning,
         )
 
@@ -238,6 +254,8 @@ class TestnetTradingDaemon:
                 await self._refresh_exchange_filters()
                 for symbol in self.settings.symbols.enabled_symbols:
                     await self._refresh_symbol_frames(symbol)
+                await self._refresh_account_positions()
+                for symbol in self.settings.symbols.enabled_symbols:
                     await self._process_symbol(symbol)
                 self.last_rest_poll_ok_at = datetime.now(UTC)
             except Exception as exc:  # noqa: BLE001 - daemon should keep polling
@@ -330,11 +348,11 @@ class TestnetTradingDaemon:
                         self.settings.symbols.enabled_symbols,
                         self.last_snapshots,
                         active,
-                        account_state=_simulated_account_context(),
-                        positions=[
-                            _unknown_position_context(item)
-                            for item in self.settings.symbols.enabled_symbols
-                        ],
+                        account_state=_account_context(self.latest_account_state),
+                        positions=_position_contexts(
+                            self.settings.symbols.enabled_symbols,
+                            self.latest_position_states,
+                        ),
                         budget_status=budget_status(self.settings, session),
                         data_quality_summary={
                             **self._data_quality_status(),
@@ -476,6 +494,26 @@ class TestnetTradingDaemon:
         if entry_klines:
             self.last_kline_time = datetime.fromtimestamp(int(entry_klines[-1][6]) / 1000, tz=UTC)
 
+    async def _refresh_account_positions(self) -> None:
+        latest_prices: dict[str, Decimal] = {}
+        entry_tf = self.settings.symbols.timeframes.entry
+        for symbol in self.settings.symbols.enabled_symbols:
+            frame = self.frames.get((symbol, entry_tf))
+            if frame is not None and not frame.empty:
+                latest_prices[symbol] = Decimal(str(frame["close"].iloc[-1]))
+        snapshot = await self.account_position_service.refresh_all(
+            self.settings.symbols.enabled_symbols,
+            latest_prices,
+        )
+        self.latest_account_position_snapshot = snapshot
+        self.latest_account_state = snapshot.account
+        self.latest_position_states = {position.symbol: position for position in snapshot.positions}
+        self._log(
+            "account_position_refreshed",
+            account_status=snapshot.account.status.value,
+            safe_for_real_order=snapshot.safe_for_real_order,
+        )
+
     async def _process_symbol(self, symbol: str) -> None:
         run_id = f"runtime-{uuid.uuid4().hex[:16]}"
         entry_tf = self.settings.symbols.timeframes.entry
@@ -601,8 +639,14 @@ class TestnetTradingDaemon:
                     current_snapshot=snapshot,
                     candidate_signal=signal.model_dump(mode="json"),
                     active_strategy_plan=active_plan,
-                    position_state={"symbol": symbol, "status": "unknown", "source": "not_synced"},
-                    risk_state={"status": "pre_risk_check"},
+                    position_state=_position_context(
+                        self.latest_position_states.get(symbol)
+                    ),
+                    risk_state={
+                        "status": "pre_risk_check",
+                        "kill_switch_state": self._kill_switch_state(),
+                    },
+                    account_state_summary=_account_context(self.latest_account_state),
                     settings=self.settings,
                     data_quality_flags=[]
                     if dq_snapshot.safe_for_signal_review
@@ -676,12 +720,17 @@ class TestnetTradingDaemon:
         if filters is None:
             self._log("risk_rejected", level="WARNING", symbol=symbol, reason="missing filters")
             return
+        runtime_kill_switch_enabled = CircuitBreaker(session).is_enabled()
+        account_runtime_state = self.latest_account_state
+        position_runtime_state = self.latest_position_states.get(symbol)
+        account_state = _account_to_risk_state(account_runtime_state)
+        position_state = _position_to_risk_state(symbol, position_runtime_state)
         try:
             entry_price = Decimal(str(snapshot["price"]))
             atr_value = Decimal(str(snapshot.get("atr14_5m") or "0"))
             stop_loss = entry_price - max(atr_value, Decimal("1"))
             sized = PositionSizer().size_position(
-                account_equity_usdt=Decimal("1000"),
+                account_equity_usdt=account_state.equity_usdt,
                 max_single_trade_risk_pct=Decimal(str(self.settings.risk_config.max_single_trade_risk_pct)),
                 entry_price=entry_price,
                 stop_loss_price=stop_loss,
@@ -719,18 +768,19 @@ class TestnetTradingDaemon:
         market_health = self._risk_market_health()
         client_order_id = generate_client_order_id("testnet")
         self._log("risk_check_started", symbol=symbol)
-        decision = RiskEngine(self.settings).evaluate(
+        decision = self.risk_engine.evaluate(
             signal=signal,
             ai_review=ai_result.review,
             ai_schema_valid=ai_result.schema_valid,
-            account=AccountState(equity_usdt=Decimal("1000")),
-            position=PositionState(symbol=symbol),
+            account=account_state,
+            position=position_state,
             market_health=market_health,
             symbol_filters=filters,
             order_price=sized.adjusted_entry_price,
             order_quantity=sized.adjusted_quantity,
             trading_mode="testnet",
             client_order_id=client_order_id,
+            runtime_kill_switch_enabled=runtime_kill_switch_enabled,
         )
         risk_record = RiskDecision(
             symbol=symbol,
@@ -760,6 +810,8 @@ class TestnetTradingDaemon:
             symbol=symbol,
             reason=decision.reason,
         )
+        if not decision.approved:
+            return
         order_quality = self.data_quality_gate.evaluate_order_preconditions(
             symbol=symbol,
             market_health={
@@ -774,12 +826,10 @@ class TestnetTradingDaemon:
                 else None,
             },
             exchange_filters_available=filters is not None,
-            account_state_status="simulated_default"
-            if self.dry_run or not self.order_execution_enabled
-            else "unknown",
-            position_state_status="simulated_default"
-            if self.dry_run or not self.order_execution_enabled
-            else "unknown",
+            account_state_status=_data_quality_account_status(account_runtime_state),
+            position_state_status=_data_quality_position_status(
+                [position_runtime_state] if position_runtime_state else []
+            ),
             active_strategy_plan=self.active_strategy_plan,
             for_real_order=self.order_execution_enabled and not self.dry_run,
         )
@@ -1002,18 +1052,76 @@ class TestnetTradingDaemon:
         except Exception as exc:  # noqa: BLE001 - health should stay available
             return budget_status(self.settings, None) | {"warning": type(exc).__name__}
 
+    def _kill_switch_state(self) -> dict[str, object]:
+        try:
+            with self.session_factory() as session:
+                runtime_enabled = CircuitBreaker(session).is_enabled()
+        except Exception as exc:  # noqa: BLE001 - health should stay available
+            runtime_enabled = False
+            return {
+                "config_enabled": self.settings.risk_config.kill_switch_enabled,
+                "runtime_enabled": runtime_enabled,
+                "effective_enabled": self.settings.risk_config.kill_switch_enabled,
+                "warning": type(exc).__name__,
+            }
+        return {
+            "config_enabled": self.settings.risk_config.kill_switch_enabled,
+            "runtime_enabled": runtime_enabled,
+            "effective_enabled": self.settings.risk_config.kill_switch_enabled
+            or runtime_enabled,
+        }
+
+    def _risk_runtime_status(self) -> dict[str, object]:
+        return self.risk_engine.runtime_state() | {
+            "kill_switch_enabled_config": self.settings.risk_config.kill_switch_enabled,
+            "kill_switch_enabled_runtime": self._kill_switch_state().get("runtime_enabled", False),
+        }
+
+    def _account_position_status(self) -> dict[str, Any]:
+        snapshot = self.latest_account_position_snapshot
+        if snapshot is None:
+            snapshot = self.account_position_service.simulated_snapshot(
+                self.settings.symbols.enabled_symbols
+            )
+            self.latest_account_position_snapshot = snapshot
+            self.latest_account_state = snapshot.account
+            self.latest_position_states = {
+                position.symbol: position for position in snapshot.positions
+            }
+        return {
+            "account_status": snapshot.account.status.value,
+            "account_source": snapshot.account.source,
+            "equity_usdt": str(snapshot.account.equity_usdt),
+            "available_usdt": str(snapshot.account.available_usdt),
+            "positions": [
+                {
+                    "symbol": position.symbol,
+                    "status": position.status.value,
+                    "source": position.source,
+                    "side": position.side,
+                    "quantity": str(position.quantity),
+                    "position_pct": position.position_pct,
+                    "is_safe_for_real_order": position.is_safe_for_real_order,
+                }
+                for position in snapshot.positions
+            ],
+            "safe_for_real_order": snapshot.safe_for_real_order,
+            "latest_created_at": snapshot.created_at.isoformat(),
+            "reason_codes": snapshot.reason_codes,
+        }
+
     def _evaluate_data_quality_runtime(
         self, *, active_strategy_plan: dict[str, Any] | None = None
     ) -> DataQualitySnapshot:
+        account_status = _data_quality_account_status(self.latest_account_state)
+        position_status = _data_quality_position_status(
+            list(self.latest_position_states.values())
+        )
         snapshot = self.data_quality_gate.evaluate_runtime_health(
             runtime_health=self._runtime_health_snapshot(),
             exchange_filters_available=bool(self.exchange_filters) or None,
-            account_state_status="simulated_default"
-            if self.dry_run or not self.order_execution_enabled
-            else "unknown",
-            position_state_status="simulated_default"
-            if self.dry_run or not self.order_execution_enabled
-            else "unknown",
+            account_state_status=account_status,
+            position_state_status=position_status,
             active_strategy_plan=active_strategy_plan,
             for_real_order=self.order_execution_enabled and not self.dry_run,
         )
@@ -1196,8 +1304,18 @@ class TestnetTradingDaemon:
             latest_data_quality_snapshot=self.latest_data_quality_snapshot.model_dump(mode="json")
             if self.latest_data_quality_snapshot
             else None,
-            account_state=_simulated_account_context(),
-            position_state={"status": "unknown", "source": "not_synced"},
+            account_position_snapshot=self.latest_account_position_snapshot.model_dump(mode="json")
+            if self.latest_account_position_snapshot
+            else None,
+            kill_switch_state=self._kill_switch_state(),
+            risk_engine_runtime_state=self._risk_runtime_status(),
+            account_state=_account_context(self.latest_account_state),
+            position_state={
+                "positions": _position_contexts(
+                    self.settings.symbols.enabled_symbols,
+                    self.latest_position_states,
+                )
+            },
         )
 
     def _runtime_health_snapshot(self) -> dict[str, Any]:
@@ -1269,6 +1387,102 @@ def _unknown_position_context(symbol: str) -> dict[str, object]:
         "unrealized_pnl": "unknown",
         "position_pct": "unknown",
     }
+
+
+def _account_context(account: RuntimeAccountState | None) -> dict[str, object]:
+    if account is None:
+        return _simulated_account_context()
+    return {
+        "status": account.status.value.lower(),
+        "source": account.source,
+        "equity_usdt": str(account.equity_usdt),
+        "available_usdt": str(account.available_usdt),
+        "daily_realized_pnl": str(account.daily_realized_pnl),
+        "daily_unrealized_pnl": str(account.daily_unrealized_pnl),
+        "daily_loss_remaining": "unknown",
+        "is_safe_for_real_order": account.is_safe_for_real_order,
+    }
+
+
+def _position_contexts(
+    symbols: list[str], positions: dict[str, RuntimePositionState]
+) -> list[dict[str, object]]:
+    return [
+        _position_context(positions.get(symbol.upper())) if positions.get(symbol.upper())
+        else _unknown_position_context(symbol)
+        for symbol in symbols
+    ]
+
+
+def _position_context(position: RuntimePositionState | None) -> dict[str, object]:
+    if position is None:
+        return _unknown_position_context("unknown")
+    return {
+        "status": position.status.value.lower(),
+        "source": position.source,
+        "symbol": position.symbol,
+        "side": position.side,
+        "quantity": str(position.quantity),
+        "entry_price": str(position.entry_price),
+        "unrealized_pnl": str(position.unrealized_pnl),
+        "position_pct": position.position_pct,
+        "is_safe_for_real_order": position.is_safe_for_real_order,
+    }
+
+
+def _data_quality_account_status(account: RuntimeAccountState | None) -> str:
+    if account is None:
+        return "unknown"
+    if account.status.value == "OK":
+        return "ok"
+    if account.status.value == "SIMULATED_DEFAULT":
+        return "simulated_default"
+    if account.status.value == "ERROR":
+        return "error"
+    return "unknown"
+
+
+def _data_quality_position_status(positions: list[RuntimePositionState]) -> str:
+    if not positions:
+        return "unknown"
+    statuses = {position.status.value for position in positions}
+    if statuses == {"OK"}:
+        return "ok"
+    if "ERROR" in statuses:
+        return "error"
+    if "SIMULATED_DEFAULT" in statuses:
+        return "simulated_default"
+    return "unknown"
+
+
+def _account_to_risk_state(account: RuntimeAccountState | None) -> AccountState:
+    if account is None:
+        return AccountState(equity_usdt=Decimal("1000"))
+    return AccountState(
+        equity_usdt=_decimal_or_default(account.equity_usdt, Decimal("1000")),
+        daily_loss_pct=account.daily_loss_pct,
+        consecutive_losses=account.consecutive_losses,
+        total_position_pct=account.total_position_pct,
+    )
+
+
+def _position_to_risk_state(symbol: str, position: RuntimePositionState | None) -> PositionState:
+    if position is None:
+        return PositionState(symbol=symbol)
+    return PositionState(
+        symbol=symbol,
+        quantity=_decimal_or_default(position.quantity, Decimal("0")),
+        position_pct=position.position_pct,
+        side=position.side,
+        last_loss_at=position.last_loss_at,
+    )
+
+
+def _decimal_or_default(value: object, default: Decimal) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except Exception:  # noqa: BLE001
+        return default
 
 
 def _severity_at_least(value: str, threshold: str) -> bool:

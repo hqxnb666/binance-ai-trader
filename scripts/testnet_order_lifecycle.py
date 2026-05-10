@@ -13,15 +13,18 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from account.state_service import AccountPositionService  # noqa: E402
 from binance_client.exchange_info import parse_symbol_filters  # noqa: E402
 from binance_client.user_stream import UserDataStreamClient  # noqa: E402
 from broker.base import OrderRequest  # noqa: E402
 from broker.binance_spot_testnet import BinanceSpotTestnetBroker  # noqa: E402
 from config.settings import Settings, get_settings  # noqa: E402
+from data_quality.gate import DataQualityGate  # noqa: E402
 from journal.database import SessionLocal, init_db  # noqa: E402
 from journal.models import RiskDecision  # noqa: E402
 from orders.order_manager import OrderManager  # noqa: E402
 from orders.reconciliation import reconcile_open_orders  # noqa: E402
+from risk.circuit_breaker import CircuitBreaker  # noqa: E402
 from risk.order_filter_validator import OrderFilterValidator, floor_to_step  # noqa: E402
 from strategies.base import StrategySignalPayload  # noqa: E402
 
@@ -29,7 +32,15 @@ REPORT_DIR = ROOT / "reports" / "order_lifecycle"
 TERMINAL_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}
 
 
-def validate_lifecycle_safety(settings: Settings, *, confirmed: bool) -> list[str]:
+def validate_lifecycle_safety(
+    settings: Settings,
+    *,
+    confirmed: bool,
+    data_quality_safe_for_real_order: bool = False,
+    account_state_status: str = "UNKNOWN",
+    position_state_status: str = "UNKNOWN",
+    runtime_kill_switch_enabled: bool = False,
+) -> list[str]:
     errors: list[str] = []
     if not confirmed:
         errors.append("Missing --i-understand-this-is-testnet confirmation flag")
@@ -39,8 +50,18 @@ def validate_lifecycle_safety(settings: Settings, *, confirmed: bool) -> list[st
         errors.append("Live trading must be disabled")
     if not settings.order_execution_enabled:
         errors.append("ORDER_EXECUTION_ENABLED must be true for lifecycle test")
+    if settings.trading_dry_run:
+        errors.append("TRADING_DRY_RUN must be false for lifecycle real Testnet order")
     if not settings.binance_testnet_api_key or not settings.binance_testnet_api_secret:
         errors.append("Binance Testnet API key/secret missing")
+    if settings.risk_config.kill_switch_enabled or runtime_kill_switch_enabled:
+        errors.append("Kill switch must be disabled")
+    if account_state_status != "OK":
+        errors.append("Account state must be OK")
+    if position_state_status != "OK":
+        errors.append("Position state must be OK")
+    if not data_quality_safe_for_real_order:
+        errors.append("DataQualityGate must be safe_for_real_testnet_order")
     return errors
 
 
@@ -58,7 +79,13 @@ async def run_lifecycle(
         "order_execution_enabled": settings.order_execution_enabled,
         "events": [],
     }
-    errors = validate_lifecycle_safety(settings, confirmed=confirmed)
+    errors = validate_lifecycle_safety(
+        settings,
+        confirmed=confirmed,
+        data_quality_safe_for_real_order=True,
+        account_state_status="OK",
+        position_state_status="OK",
+    )
     if errors:
         report["status"] = "SAFETY_CHECK_FAILED"
         report["errors"] = errors
@@ -73,6 +100,59 @@ async def run_lifecycle(
         filters = parse_symbol_filters(exchange_info, symbol)
         ticker = await broker.client.get_symbol_price(symbol)
         latest_price = Decimal(str(ticker["price"]))
+        service = AccountPositionService(
+            settings=settings,
+            broker=broker,
+            dry_run=settings.trading_dry_run,
+            order_execution_enabled=settings.order_execution_enabled,
+        )
+        account_position = await service.refresh_all([symbol], {symbol.upper(): latest_price})
+        with SessionLocal() as session:
+            runtime_kill_switch_enabled = CircuitBreaker(session).is_enabled()
+        data_quality = DataQualityGate(settings).evaluate_runtime_health(
+            runtime_health={
+                "state": "lifecycle_preflight",
+                "market_stream_connected": True,
+                "user_stream_connected": True,
+                "last_kline_time": datetime.now(UTC).isoformat(),
+                "last_user_event_time": datetime.now(UTC).isoformat(),
+                "data_delay_seconds": 0,
+            },
+            exchange_filters_available=True,
+            account_state_status="ok"
+            if account_position.account.status.value == "OK"
+            else "unknown",
+            position_state_status="ok"
+            if all(position.status.value == "OK" for position in account_position.positions)
+            else "unknown",
+            for_real_order=True,
+        )
+        position_status = (
+            "OK"
+            if all(position.status.value == "OK" for position in account_position.positions)
+            else "UNKNOWN"
+        )
+        preflight_errors = validate_lifecycle_safety(
+            settings,
+            confirmed=confirmed,
+            data_quality_safe_for_real_order=data_quality.safe_for_real_testnet_order,
+            account_state_status=account_position.account.status.value,
+            position_state_status=position_status,
+            runtime_kill_switch_enabled=runtime_kill_switch_enabled,
+        )
+        report["preflight"] = {
+            "account_state_status": account_position.account.status.value,
+            "position_state_status": position_status,
+            "data_quality_status": data_quality.overall_status.value,
+            "data_quality_safe_for_real_testnet_order": (
+                data_quality.safe_for_real_testnet_order
+            ),
+            "runtime_kill_switch_enabled": runtime_kill_switch_enabled,
+        }
+        if preflight_errors:
+            report["status"] = "SAFETY_CHECK_FAILED"
+            report["errors"] = preflight_errors
+            return report
         order_price = _away_from_market_price(latest_price, side, filters.tick_size)
         quantity = _small_quantity(order_price, filters.min_notional, filters.step_size)
         OrderFilterValidator(filters).assert_order(price=order_price, quantity=quantity)

@@ -93,6 +93,26 @@ class RuntimeTaskManager:
                     "health_warning": False,
                 },
                 "data_quality_status": self._stopped_data_quality_status(),
+                "account_position_status": {
+                    "account_status": "UNKNOWN",
+                    "account_source": "unknown",
+                    "safe_for_real_order": False,
+                    "positions": [],
+                    "latest_created_at": None,
+                    "reason_codes": ["RUNTIME_STOPPED"],
+                },
+                "risk_runtime_status": {
+                    "kill_switch_enabled_config": self.settings.risk_config.kill_switch_enabled,
+                    "kill_switch_enabled_runtime": False,
+                    "orders_last_minute": 0,
+                    "seen_client_order_id_count": 0,
+                    "risk_engine_reused": False,
+                },
+                "kill_switch_state": {
+                    "config_enabled": self.settings.risk_config.kill_switch_enabled,
+                    "runtime_enabled": False,
+                    "effective_enabled": self.settings.risk_config.kill_switch_enabled,
+                },
             }
         return self.daemon.health().model_dump(mode="json")
 

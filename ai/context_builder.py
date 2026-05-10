@@ -86,6 +86,7 @@ def build_signal_review_context(
     risk_state: dict[str, Any] | None = None,
     *,
     settings: Settings | None = None,
+    account_state_summary: dict[str, Any] | None = None,
     recent_rejections_summary: dict[str, Any] | None = None,
     data_quality_flags: list[str] | None = None,
     budget_status: dict[str, Any] | None = None,
@@ -96,6 +97,7 @@ def build_signal_review_context(
         "market_snapshot": current_snapshot,
         "candidate_signal": candidate_signal,
         "active_strategy_plan": summarize_strategy_plan(active_strategy_plan),
+        "account_state_summary": account_state_summary or {"status": "unknown"},
         "position_state": position_state or {"status": "unknown"},
         "risk_state": risk_state or {"status": "unknown"},
         "recent_rejections_summary": recent_rejections_summary or {"status": "unknown"},
@@ -178,6 +180,9 @@ def build_audit_context(
     openai_usage_summary: dict[str, Any] | None = None,
     data_quality_summary: dict[str, Any] | None = None,
     latest_data_quality_snapshot: dict[str, Any] | None = None,
+    account_position_snapshot: dict[str, Any] | None = None,
+    kill_switch_state: dict[str, Any] | None = None,
+    risk_engine_runtime_state: dict[str, Any] | None = None,
     account_state: dict[str, Any] | None = None,
     position_state: dict[str, Any] | None = None,
     diagnostics_summary: dict[str, Any] | None = None,
@@ -231,8 +236,13 @@ def build_audit_context(
             "latest_data_quality_snapshot": _compact_data_quality_snapshot(
                 latest_data_quality_snapshot
             ),
+            "account_position_snapshot": _compact_account_position_snapshot(
+                account_position_snapshot
+            ),
             "account_state": account_state or _unknown_account_state(),
             "position_state": position_state or _unknown_position(),
+            "kill_switch_state": kill_switch_state or {"status": "unknown"},
+            "risk_engine_runtime_state": risk_engine_runtime_state or {"status": "unknown"},
             "security_guardrails": {
                 "live_trading_enabled": (
                     settings.live_trading_enabled and settings.live_trading.enabled
@@ -540,5 +550,44 @@ def _compact_data_quality_snapshot(snapshot: dict[str, Any] | None) -> dict[str,
             "safe_for_real_testnet_order": snapshot.get("safe_for_real_testnet_order"),
             "reason_codes": snapshot.get("reason_codes", [])[:20],
             "issues": compact_issues,
+        }
+    )
+
+
+def _compact_account_position_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    if not snapshot:
+        return {"status": "unknown"}
+    account = snapshot.get("account", {}) if isinstance(snapshot.get("account"), dict) else {}
+    positions = snapshot.get("positions", [])
+    compact_positions = []
+    if isinstance(positions, list):
+        for position in positions[:10]:
+            if not isinstance(position, dict):
+                continue
+            compact_positions.append(
+                {
+                    "symbol": position.get("symbol"),
+                    "status": position.get("status"),
+                    "source": position.get("source"),
+                    "side": position.get("side"),
+                    "position_pct": position.get("position_pct"),
+                    "is_safe_for_real_order": position.get("is_safe_for_real_order"),
+                }
+            )
+    return _sanitize_json(
+        {
+            "schema_version": snapshot.get("schema_version"),
+            "created_at": snapshot.get("created_at"),
+            "source": snapshot.get("source"),
+            "safe_for_real_order": snapshot.get("safe_for_real_order"),
+            "reason_codes": snapshot.get("reason_codes", [])[:20],
+            "account": {
+                "status": account.get("status"),
+                "source": account.get("source"),
+                "equity_usdt": account.get("equity_usdt"),
+                "available_usdt": account.get("available_usdt"),
+                "is_safe_for_real_order": account.get("is_safe_for_real_order"),
+            },
+            "positions": compact_positions,
         }
     )
