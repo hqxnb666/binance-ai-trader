@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import desc, select
@@ -17,6 +18,12 @@ from ai.schemas import (
 )
 from app.dependencies import db_session_dependency, settings_dependency
 from config.settings import Settings
+from dashboard.config_service import (
+    load_risk_config,
+    save_strategy_config,
+    strategy_config_response,
+    validate_strategy_config,
+)
 from diagnostics.report import run_diagnostics
 from journal.audit_store import (
     audit_record_to_dict,
@@ -26,15 +33,18 @@ from journal.audit_store import (
 from journal.daily_report import build_daily_report, upsert_daily_report
 from journal.models import (
     DailyReport,
+    OpenAIUsageRecord,
     OrderRecord,
     PipelineAudit,
     RiskDecision,
     RuntimeState,
     StrategySignal,
 )
+from journal.openai_usage_store import summarize_openai_usage
 from journal.pipeline_audit import pipeline_audits_by_run_id, recent_pipeline_audits
 from risk.circuit_breaker import CircuitBreaker
 from runtime.task_manager import RuntimeTaskManager
+from scripts.verify_testnet_order_readiness import build_readiness_report
 
 router = APIRouter()
 
@@ -65,6 +75,33 @@ def status(
 @router.get("/config/safe")
 def safe_config(settings: Settings = Depends(settings_dependency)) -> dict[str, object]:
     return settings.safe_config()
+
+
+@router.get("/config/strategy")
+def strategy_config() -> dict[str, object]:
+    return strategy_config_response()
+
+
+@router.post("/config/strategy/validate")
+def strategy_config_validate(payload: dict[str, Any]) -> dict[str, object]:
+    return validate_strategy_config(payload)
+
+
+@router.post("/config/strategy/save")
+def strategy_config_save(payload: dict[str, Any]) -> dict[str, object]:
+    return save_strategy_config(payload)
+
+
+@router.get("/config/risk")
+def risk_config() -> dict[str, object]:
+    return {
+        "config": load_risk_config(),
+        "read_only": True,
+        "message": (
+            "Risk config is read-only in Dashboard V2. Edit risk.yaml manually only with "
+            "explicit tests and review."
+        ),
+    }
 
 
 @router.get("/symbols")
@@ -320,6 +357,51 @@ def runtime_diagnostics_latest(
     return latest
 
 
+@router.post("/runtime/readiness/check")
+async def runtime_readiness_check(
+    request: Request,
+    settings: Settings = Depends(settings_dependency),
+) -> dict[str, object]:
+    report = await build_readiness_report(settings)
+    request.app.state.latest_readiness_report = report
+    return report
+
+
+@router.get("/runtime/readiness/latest")
+def runtime_readiness_latest(request: Request) -> dict[str, object]:
+    latest = getattr(request.app.state, "latest_readiness_report", None)
+    if latest is None:
+        return {"status": "NO_READINESS_CHECK_RUN"}
+    return latest
+
+
+@router.get("/runtime/openai-usage")
+def runtime_openai_usage(
+    days: int = 1,
+    session: Session = Depends(db_session_dependency),
+    settings: Settings = Depends(settings_dependency),
+) -> dict[str, object]:
+    days = max(1, min(days, 90))
+    summary = summarize_openai_usage(session, days=days)
+    since = datetime.now(UTC) - timedelta(days=days)
+    rows = session.scalars(
+        select(OpenAIUsageRecord).where(OpenAIUsageRecord.created_at >= since)
+    ).all()
+    status_breakdown: dict[str, int] = {}
+    for row in rows:
+        status_breakdown[row.status] = status_breakdown.get(row.status, 0) + 1
+    return {
+        "created_at": datetime.now(UTC).isoformat(),
+        "days": days,
+        "summary": summary,
+        "status_breakdown": status_breakdown,
+        "daily_budget_usd": settings.openai_daily_budget_usd,
+        "monthly_budget_usd": settings.openai_monthly_budget_usd,
+        "warnings": _openai_usage_warnings(summary, settings),
+        "safety_note": "No raw prompts, raw responses, API keys, or request headers are returned.",
+    }
+
+
 @router.get("/runtime/audit/recent")
 def runtime_audit_recent(
     limit: int = 50,
@@ -451,3 +533,23 @@ def _network_readiness(report: dict[str, object] | None) -> dict[str, object]:
         "proxy_env_present": any(value == "present" for value in environment["proxy_env"].values()),
         "last_diagnostics_at": report.get("created_at"),
     }
+
+
+def _openai_usage_warnings(summary: dict[str, Any], settings: Settings) -> list[str]:
+    warnings: list[str] = []
+    estimated = float(summary.get("estimated_cost_usd", 0.0) or 0.0)
+    if estimated >= settings.openai_daily_budget_usd * 0.8:
+        warnings.append("Estimated selected-window usage is near the daily budget.")
+    if estimated >= settings.openai_monthly_budget_usd * 0.8:
+        warnings.append("Estimated selected-window usage is near the monthly budget.")
+    status_counts = {
+        status
+        for bucket in [*summary.get("by_role", {}).values(), *summary.get("by_model", {}).values()]
+        for status in ("failed", "skipped_budget")
+        if bucket.get(status, 0)
+    }
+    if "failed" in status_counts:
+        warnings.append("Recent OpenAI calls include failures.")
+    if "skipped_budget" in status_counts:
+        warnings.append("BudgetGuard skipped at least one OpenAI call.")
+    return warnings

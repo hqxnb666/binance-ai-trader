@@ -108,7 +108,7 @@ Useful endpoints:
 - `POST /control/kill-switch/on`
 - `POST /control/kill-switch/off`
 
-## Local Operations Dashboard
+## Local Operations Dashboard V2
 
 Run FastAPI locally, then open the dashboard:
 
@@ -118,11 +118,12 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 Open http://127.0.0.1:8000/dashboard.
 
-The dashboard is a local HTML/JavaScript page served by FastAPI. It uses the existing API only and
-does not add a frontend build chain. It shows runtime health, Binance stream status, DataQualityGate
-state, Strategy snapshots, AI SignalReview records, RiskEngine decisions, recent orders, Shadow Mode
-reports, account/position readiness, OpenAI budget, SystemAuditor output, logs, and a review
-workspace for copying a GPT analysis package.
+The dashboard is a local HTML/JavaScript page served by FastAPI. It uses native browser APIs and
+Tailwind CDN only; there is no React, Vite, npm build step, or public-facing product surface. It
+shows runtime health, Binance stream status, DataQualityGate state, Strategy snapshots, AI
+SignalReview records, RiskEngine decisions, recent orders, Shadow Mode reports, account/position
+readiness, OpenAI budget, SystemAuditor output, logs, readiness checks, OpenAI usage, and a review
+workspace for copying GPT analysis packages.
 
 Allowed dashboard actions are intentionally limited:
 
@@ -133,11 +134,33 @@ Allowed dashboard actions are intentionally limited:
 - Run SystemAuditor.
 - Turn runtime kill switch on.
 - Turn runtime kill switch off after a browser confirmation warning.
+- Load, validate, and save EMA Trend strategy parameters to `config/strategy.yaml`.
+- Run a Testnet readiness check that only checks preconditions and does not place orders.
+- Load 1-day or 7-day OpenAI usage summaries.
 
 The dashboard deliberately does not provide real order buttons, a Live switch, a disable-dry-run
-button, an order execution enable button, configuration editing, Codex automation, or a Testnet
-order lifecycle launcher. It does not call `broker.place_order` and does not change RiskEngine,
-OrderManager, broker, Live guard, or default trading safety settings.
+button, an order execution enable button, risk/live/order configuration editing, Codex automation,
+or a Testnet order lifecycle launcher. It does not call `broker.place_order` and does not change
+RiskEngine, OrderManager, broker, Live guard, or default trading safety settings.
+
+Dashboard V2 includes a Strategy Parameter Center for the local EMA Trend strategy. It may save only
+the whitelisted `ema_trend` fields in `config/strategy.yaml`, creates a YAML backup under
+`reports/config_backups/`, and returns `pending_restart=true`. Saving does not hot reload settings,
+does not restart FastAPI/runtime, and never triggers orders. After changing strategy parameters,
+restart FastAPI/runtime and validate with:
+
+```powershell
+python scripts/backtest.py --symbol BTCUSDT --days 90
+python scripts/backtest.py --symbol ETHUSDT --days 90
+python scripts/shadow_report.py --hours 24 --json
+```
+
+Risk parameters are shown in the Risk Config Viewer as read-only. Dashboard V2 does not save
+`risk.yaml`, `.env`, trading mode, dry-run, order execution, broker, or Live settings.
+
+Real Testnet lifecycle remains CLI-only. Even if the dashboard readiness panel says
+`ready_for_real_testnet_order=true`, this project does not expose a dashboard order button; use the
+CLI readiness and lifecycle scripts with explicit confirmations.
 
 ## Phase 2 Runtime Daemon
 
