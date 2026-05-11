@@ -590,6 +590,25 @@ def runtime_diagnostic_snapshot(
     return sanitize_json(snapshot)
 
 
+@router.get("/runtime/dashboard-summary")
+def runtime_dashboard_summary(
+    request: Request,
+    manager: RuntimeTaskManager = Depends(runtime_manager),
+    session: Session = Depends(db_session_dependency),
+    settings: Settings = Depends(settings_dependency),
+) -> dict[str, object]:
+    snapshot = runtime_diagnostic_snapshot(
+        request=request,
+        shadow_limit=100,
+        signal_limit=50,
+        plan_limit=10,
+        manager=manager,
+        session=session,
+        settings=settings,
+    )
+    return _dashboard_summary_from_snapshot(snapshot)
+
+
 @router.get("/runtime/audit/recent")
 def runtime_audit_recent(
     limit: int = 50,
@@ -975,3 +994,295 @@ def _diagnostic_summary(
         "counts": counts,
         "notes": notes,
     }
+
+
+def _dashboard_summary_from_snapshot(snapshot: dict[str, Any]) -> dict[str, object]:
+    runtime_health = _dict_or_empty(snapshot.get("runtime_health"))
+    status = _dict_or_empty(snapshot.get("status"))
+    safe_config = _dict_or_empty(snapshot.get("safe_config"))
+    data_quality = _dict_or_empty(snapshot.get("data_quality"))
+    shadow_report = _dict_or_empty(snapshot.get("shadow_report"))
+    active_plan_payload = _dict_or_empty(snapshot.get("active_strategy_plan"))
+    active_plan = _dict_or_empty(active_plan_payload.get("plan"))
+    recent_plans = _list_or_empty(snapshot.get("recent_strategy_plans"))
+    recent_signals = _list_or_empty(snapshot.get("recent_signals"))
+    ai_reviews = _list_or_empty(snapshot.get("last_ai_reviews"))
+    risk_decisions = _list_or_empty(snapshot.get("last_risk_decisions"))
+    audit_latest = _dict_or_empty(snapshot.get("audit_latest"))
+    risk_config = _dict_or_empty(snapshot.get("risk_config")).get("config", {})
+    strategy_config = _dict_or_empty(snapshot.get("strategy_config")).get("config", {})
+    blocking = _dict_or_empty(snapshot.get("blocking_attribution"))
+
+    plan_status_counts = _count_values(recent_plans, "status")
+    plan_reason_text = " ".join(
+        " ".join(str(code) for code in plan.get("reason_codes", []) or [])
+        for plan in recent_plans
+        if isinstance(plan, dict)
+    )
+    signal_counts: dict[str, int] = {}
+    for signal in recent_signals:
+        if not isinstance(signal, dict):
+            continue
+        key = f"{signal.get('symbol', 'UNKNOWN')}_{signal.get('side', 'UNKNOWN')}"
+        signal_counts[key] = signal_counts.get(key, 0) + 1
+
+    ai_counts = _ai_decision_counts(ai_reviews)
+    risk_reason_counts = _count_values(risk_decisions, "reason")
+    rejected_count = sum(1 for row in risk_decisions if not _dict_or_empty(row).get("approved"))
+    approved_count = sum(1 for row in risk_decisions if _dict_or_empty(row).get("approved"))
+    missing = _missing_sections(snapshot)
+    human_summary = _human_dashboard_summary(
+        runtime_health=runtime_health,
+        data_quality=data_quality,
+        active_plan_payload=active_plan_payload,
+        shadow_report=shadow_report,
+        blocking=blocking,
+        missing=missing,
+    )
+
+    return sanitize_json(
+        {
+            "schema_version": "dashboard_summary_v1",
+            "created_at": datetime.now(UTC).isoformat(),
+            "safety": {
+                "runtime_state": runtime_health.get("state", "UNKNOWN"),
+                "trading_mode": runtime_health.get(
+                    "trading_mode", status.get("trading_mode", "UNKNOWN")
+                ),
+                "dry_run": runtime_health.get(
+                    "dry_run", safe_config.get("trading_dry_run", True)
+                ),
+                "order_execution_enabled": runtime_health.get(
+                    "order_execution_enabled",
+                    safe_config.get("order_execution_enabled", False),
+                ),
+                "live_trading_enabled": status.get(
+                    "live_trading_enabled",
+                    safe_config.get("live_trading_enabled", False),
+                ),
+                "kill_switch_enabled": runtime_health.get(
+                    "kill_switch_state", {}
+                ).get("effective_enabled", status.get("kill_switch_enabled", False)),
+                "market_stream_connected": runtime_health.get(
+                    "market_stream_connected", False
+                ),
+                "user_stream_connected": runtime_health.get("user_stream_connected", False),
+                "data_quality": data_quality.get("overall_status", data_quality.get("status")),
+                "safe_for_order": data_quality.get("safe_for_order", False),
+            },
+            "diagnosis": {
+                "primary_status": _primary_status(runtime_health, data_quality, audit_latest),
+                "primary_blockers": snapshot.get("diagnostic_summary", {}).get(
+                    "primary_blockers", []
+                ),
+                "human_summary": human_summary,
+                "missing_sections": missing,
+            },
+            "shadow": {
+                "total_decisions": shadow_report.get("total_decisions", 0),
+                "would_place_order_count": shadow_report.get("would_place_order_count", 0),
+                "risk_rejected_count": shadow_report.get("risk_rejected_count", 0),
+                "ai_rejected_count": shadow_report.get("ai_rejected_count", 0),
+                "data_quality_blocked_count": shadow_report.get(
+                    "data_quality_blocked_count", 0
+                ),
+                "simulated_total_pnl_usdt": shadow_report.get(
+                    "simulated_total_pnl_usdt", "0"
+                ),
+                "simulated_win_rate": shadow_report.get("simulated_win_rate"),
+                "top_rejection_reasons": (
+                    shadow_report.get("top_rejection_reasons", []) or []
+                )[:5],
+            },
+            "strategy_plan": {
+                "active_status": active_plan_payload.get("status", "UNKNOWN"),
+                "risk_mode": active_plan.get("risk_mode"),
+                "trade_bias": active_plan.get("trade_bias"),
+                "requires_human_review": active_plan.get("requires_human_review"),
+                "failed_count": plan_status_counts.get("FAILED", 0),
+                "active_count": plan_status_counts.get("ACTIVE", 0),
+                "superseded_count": plan_status_counts.get("SUPERSEDED", 0),
+                "schema_invalid_count": plan_reason_text.count("STRATEGY_SCHEMA_INVALID"),
+                "recent_compact": [_compact_plan(plan) for plan in recent_plans[:5]],
+            },
+            "signals": {
+                "total": len(recent_signals),
+                "by_symbol_side": signal_counts,
+                "latest_signal_at": recent_signals[0].get("created_at")
+                if recent_signals and isinstance(recent_signals[0], dict)
+                else None,
+            },
+            "ai_reviews": {
+                "approve_count": ai_counts.get("APPROVE_TO_RISK_ENGINE", 0),
+                "human_review_count": ai_counts.get("HUMAN_REVIEW_REQUIRED", 0),
+                "reject_count": ai_counts.get("REJECT_SIGNAL", 0),
+                "decision_counts": ai_counts,
+            },
+            "risk": {
+                "approved_count": approved_count,
+                "rejected_count": rejected_count,
+                "top_reasons": _top_counts(risk_reason_counts),
+            },
+            "config": {
+                "strategy": _compact_strategy_config(_dict_or_empty(strategy_config)),
+                "risk": _compact_risk_config(_dict_or_empty(risk_config)),
+            },
+            "audit": {
+                "overall_status": audit_latest.get("overall_status", audit_latest.get("status")),
+                "highest_severity": audit_latest.get("highest_severity"),
+                "issue_count": audit_latest.get("issue_count", 0),
+                "summary": audit_latest.get("summary"),
+                "top_issues": _audit_top_issues(audit_latest),
+            },
+            "blocking_attribution": blocking,
+        }
+    )
+
+
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _list_or_empty(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _count_values(rows: list[Any], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        value = str(row.get(key, "UNKNOWN"))
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def _top_counts(counts: dict[str, int], limit: int = 5) -> list[dict[str, object]]:
+    return [
+        {"reason": reason, "count": count}
+        for reason, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:limit]
+    ]
+
+
+def _ai_decision_counts(rows: list[Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        output = _dict_or_empty(row.get("output_json"))
+        decision = str(row.get("decision") or output.get("decision") or "UNKNOWN")
+        counts[decision] = counts.get(decision, 0) + 1
+    return counts
+
+
+def _compact_plan(plan: Any) -> dict[str, object]:
+    plan = _dict_or_empty(plan)
+    return {
+        "id": plan.get("id"),
+        "status": plan.get("status"),
+        "risk_mode": plan.get("risk_mode"),
+        "trade_bias": plan.get("trade_bias"),
+        "reason_codes": (plan.get("reason_codes", []) or [])[:2],
+        "expires_at": plan.get("expires_at"),
+    }
+
+
+def _compact_strategy_config(config: dict[str, Any]) -> dict[str, object]:
+    ema = _dict_or_empty(config.get("ema_trend"))
+    return {
+        "ema_fast": ema.get("ema_fast"),
+        "ema_slow": ema.get("ema_slow"),
+        "rsi_min": ema.get("rsi_min"),
+        "rsi_max": ema.get("rsi_max"),
+        "volume_ratio_min": ema.get("volume_ratio_min"),
+    }
+
+
+def _compact_risk_config(config: dict[str, Any]) -> dict[str, object]:
+    risk = _dict_or_empty(config.get("risk"))
+    return {
+        "max_position_pct_per_symbol": risk.get("max_position_pct_per_symbol"),
+        "max_total_position_pct": risk.get("max_total_position_pct"),
+        "allow_limit_orders": risk.get("allow_limit_orders"),
+        "allow_market_orders": risk.get("allow_market_orders"),
+        "kill_switch_enabled": risk.get("kill_switch_enabled"),
+    }
+
+
+def _audit_top_issues(audit: dict[str, Any]) -> list[dict[str, object]]:
+    report = _dict_or_empty(audit.get("report"))
+    issues = _list_or_empty(report.get("issues"))
+    return [
+        {
+            "severity": issue.get("severity"),
+            "category": issue.get("category"),
+            "title": issue.get("title"),
+        }
+        for issue in issues[:3]
+        if isinstance(issue, dict)
+    ]
+
+
+def _missing_sections(snapshot: dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    for key, value in snapshot.items():
+        if isinstance(value, dict) and value.get("status") in {
+            "NOT_AVAILABLE",
+            "NO_ACTIVE_STRATEGY_PLAN",
+            "NO_READINESS_CHECK_RUN",
+            "NO_AUDIT_REPORT",
+            "NO_DATA_QUALITY_SNAPSHOT",
+        }:
+            missing.append(key)
+    if not _dict_or_empty(snapshot.get("last_snapshots")):
+        missing.append("last_snapshots")
+    return sorted(set(missing))
+
+
+def _primary_status(
+    runtime_health: dict[str, Any],
+    data_quality: dict[str, Any],
+    audit: dict[str, Any],
+) -> str:
+    if runtime_health.get("last_error") or data_quality.get("overall_status") == "CRITICAL":
+        return "ERROR"
+    if data_quality.get("overall_status") in {"DEGRADED", "WARNING"}:
+        return "WATCH"
+    if audit.get("highest_severity") in {"HIGH", "CRITICAL"}:
+        return "WATCH"
+    return "OK"
+
+
+def _human_dashboard_summary(
+    *,
+    runtime_health: dict[str, Any],
+    data_quality: dict[str, Any],
+    active_plan_payload: dict[str, Any],
+    shadow_report: dict[str, Any],
+    blocking: dict[str, Any],
+    missing: list[str],
+) -> list[str]:
+    lines: list[str] = []
+    if runtime_health.get("state") == "STOPPED":
+        lines.append(
+            "当前 Runtime 未运行。请先启动 Dry Run，再加载诊断包，"
+            "否则行情快照、数据质量和 readiness 可能为空。"
+        )
+    if shadow_report.get("would_place_order_count", 0) == 0:
+        lines.append(
+            "当前没有 WOULD_PLACE_ORDER。优先检查 StrategyPlan、AI 审查和 "
+            "RiskEngine 拒绝原因。"
+        )
+    top_block = max(blocking.items(), key=lambda item: item[1], default=(None, 0))
+    if top_block[0] and top_block[1]:
+        lines.append(f"当前主要阻断归因：{top_block[0]} = {top_block[1]}。")
+    if active_plan_payload.get("status") == "NO_ACTIVE_STRATEGY_PLAN":
+        lines.append(
+            "当前没有有效 Active StrategyPlan；若信号存在但 WOULD_PLACE_ORDER 为 0，"
+            "应先检查 plan 过期、schema invalid 或 no-trade 状态。"
+        )
+    if data_quality.get("status") == "NO_DATA_QUALITY_SNAPSHOT":
+        lines.append("尚未运行 DataQuality 检查。请点击一键运行检查。")
+    if "readiness_latest" in missing:
+        lines.append("尚未运行 Readiness 检查；需要评估 Testnet 准备状态时请运行。")
+    return lines[:5]

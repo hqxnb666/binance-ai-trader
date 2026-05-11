@@ -108,7 +108,7 @@ Useful endpoints:
 - `POST /control/kill-switch/on`
 - `POST /control/kill-switch/off`
 
-## Local Operations Dashboard V2
+## Local Operations Dashboard
 
 Run FastAPI locally, then open the dashboard:
 
@@ -118,36 +118,45 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 Open http://127.0.0.1:8000/dashboard.
 
-The dashboard is a local HTML/JavaScript page served by FastAPI. It uses native browser APIs and
-Tailwind CDN only; there is no React, Vite, npm build step, or public-facing product surface. It
-shows runtime health, Binance stream status, DataQualityGate state, Strategy snapshots, AI
-SignalReview records, RiskEngine decisions, recent orders, Shadow Mode reports, account/position
-readiness, OpenAI budget, SystemAuditor output, logs, readiness checks, OpenAI usage, and a review
-workspace for copying GPT analysis packages.
+The dashboard is a local HTML/JavaScript page served by FastAPI. It is now a summary-first console:
+the main page shows safety state, runtime state, key blockers, Shadow Mode totals, StrategyPlan
+status, Signal/AI/Risk summaries, config highlights, and the latest audit summary. Full raw
+diagnostic data is not rendered by default; it stays in memory and can be copied into a GPT review
+package.
 
-Allowed dashboard actions are intentionally limited:
+Recommended dashboard flow:
+
+1. Start Dry Run.
+2. Click `一键运行检查`.
+3. Click `加载完整诊断包`.
+4. Click `复制 GPT 完整复盘包`.
+
+The main page intentionally keeps only five primary buttons: refresh status, run checks, load the
+diagnostic snapshot, copy the GPT review package, and start/stop dry-run depending on runtime state.
+Lower-frequency and riskier controls live inside the collapsed `Advanced` section.
+
+Allowed dashboard actions are still intentionally limited:
 
 - Start/stop Testnet dry-run runtime.
 - Refresh local status panels.
-- Run DataQualityGate check.
-- Run Shadow evaluation.
-- Run SystemAuditor.
+- Run DataQualityGate, Readiness, Shadow evaluation, and SystemAuditor checks.
 - Turn runtime kill switch on.
 - Turn runtime kill switch off after a browser confirmation warning.
 - Load, validate, and save EMA Trend strategy parameters to `config/strategy.yaml`.
-- Run a Testnet readiness check that only checks preconditions and does not place orders.
 - Load 1-day or 7-day OpenAI usage summaries.
+- Copy frontend state, readiness, strategy optimization, raw diagnostic JSON, or GPT review packages.
 
 The dashboard deliberately does not provide real order buttons, a Live switch, a disable-dry-run
 button, an order execution enable button, risk/live/order configuration editing, Codex automation,
 or a Testnet order lifecycle launcher. It does not call `broker.place_order` and does not change
-RiskEngine, OrderManager, broker, Live guard, or default trading safety settings.
+StrategyPlanner, RiskEngine, OrderManager, broker, Live guard, strategy YAML, risk YAML, or default
+trading safety settings.
 
-Dashboard V2 includes a Strategy Parameter Center for the local EMA Trend strategy. It may save only
-the whitelisted `ema_trend` fields in `config/strategy.yaml`, creates a YAML backup under
-`reports/config_backups/`, and returns `pending_restart=true`. Saving does not hot reload settings,
-does not restart FastAPI/runtime, and never triggers orders. After changing strategy parameters,
-restart FastAPI/runtime and validate with:
+The collapsed Advanced area includes the Strategy Parameter Center for the local EMA Trend strategy.
+It may save only the whitelisted `ema_trend` fields in `config/strategy.yaml`, creates a YAML backup
+under `reports/config_backups/`, and returns `pending_restart=true`. Saving does not hot reload
+settings, does not restart FastAPI/runtime, and never triggers orders. After changing strategy
+parameters, restart FastAPI/runtime and validate with:
 
 ```powershell
 python scripts/backtest.py --symbol BTCUSDT --days 90
@@ -155,7 +164,7 @@ python scripts/backtest.py --symbol ETHUSDT --days 90
 python scripts/shadow_report.py --hours 24 --json
 ```
 
-Risk parameters are shown in the Risk Config Viewer as read-only. Dashboard V2 does not save
+Risk parameters are shown in the Risk Config Viewer as read-only. The dashboard does not save
 `risk.yaml`, `.env`, trading mode, dry-run, order execution, broker, or Live settings.
 
 Real Testnet lifecycle remains CLI-only. Even if the dashboard readiness panel says
@@ -164,13 +173,12 @@ CLI readiness and lifecycle scripts with explicit confirmations.
 
 ### Dashboard Diagnostic Snapshot
 
-Dashboard V2 includes a one-click diagnostic package for GPT review. Open `/dashboard`, go to
-`完整诊断包 / Diagnostic Snapshot`, then click:
+The dashboard includes a one-click diagnostic package for GPT review:
 
-- `加载完整诊断包` to call `GET /runtime/diagnostic-snapshot`.
-- `复制完整诊断包 JSON` to copy the raw sanitized diagnostic snapshot.
-- `复制 GPT 完整诊断复盘包` to copy a prompt plus all review data.
-- `复制缺失数据清单` to see which sections are still unavailable.
+- `加载完整诊断包` calls `GET /runtime/diagnostic-snapshot`.
+- `复制 GPT 完整复盘包` copies a prompt plus the sanitized diagnostic snapshot.
+- `复制原始 Diagnostic JSON` copies the raw sanitized diagnostic snapshot.
+- `复制缺失数据清单` lists sections that are still unavailable.
 
 The diagnostic snapshot is read-only. It does not place orders, mutate config, call OpenAI, run a
 Testnet lifecycle script, or expose API keys, secrets, signed query strings, `.env`, raw prompts, or
@@ -188,6 +196,10 @@ It collects the core materials normally needed for strategy and Shadow Mode revi
 If Shadow Mode shows `0 WOULD_PLACE_ORDER`, first inspect `blocking_attribution` and
 `active_strategy_plan`. They usually tell whether the primary blocker is StrategyPlan no-trade /
 human review, AI rejection, RiskEngine position limits, DataQualityGate, or missing runtime data.
+
+The page intentionally avoids default rendering of long JSON payloads, long tables, full AI review
+lists, full RiskDecision lists, full Shadow decision lists, and raw StrategyPlan output. Use the GPT
+review package when you need the complete material.
 
 ## Phase 2 Runtime Daemon
 

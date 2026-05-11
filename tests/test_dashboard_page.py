@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -9,37 +10,39 @@ from app.main import app
 from dashboard.web import dashboard_html
 
 
-def test_dashboard_page_returns_local_operations_html() -> None:
+def test_dashboard_page_returns_simplified_console_html() -> None:
     with TestClient(app) as client:
         response = client.get("/dashboard")
 
     assert response.status_code == 200
     html = response.text
-    assert "Binance AI Trader 本地运维控制台" in html
-    assert "运行时 Runtime" in html
-    assert "DataQualityGate" in html
-    assert "影子模式 Shadow Mode" in html
-    assert "RiskEngine" in html
-    assert "策略参数设置中心" in html
-    assert "风控配置只读查看器" in html
-    assert "Testnet Readiness 检查" in html
-    assert "OpenAI 用量报告" in html
-    assert "完整诊断包 / Diagnostic Snapshot" in html
-    assert "复盘工作台" in html
+    assert "Binance AI Trader Dashboard" in html
+    assert "一键诊断中心" in html
+    assert "一键刷新状态" in html
+    assert "一键运行检查" in html
     assert "加载完整诊断包" in html
-    assert "复制完整诊断包 JSON" in html
-    assert "复制 GPT 完整诊断复盘包" in html
-    assert "blocking_attribution" in html
+    assert "复制 GPT 完整复盘包" in html
+    assert "Safety Overview" in html
+    assert "Current Diagnosis" in html
+    assert "Shadow 摘要" in html
+    assert "StrategyPlan 摘要" in html
+    assert "Advanced" in html
 
 
-def test_dashboard_html_contains_safety_boundaries() -> None:
+def test_dashboard_html_keeps_main_actions_small_and_summary_first() -> None:
     html = dashboard_html()
 
+    assert len(re.findall(r'class="[^"]*\bprimary-action\b', html)) <= 5
+    assert "raw_output_json" not in html
+    assert "last_ai_reviews" not in html
+    assert "last_risk_decisions" not in html
+    assert "shadow_recent" not in html
     assert "没有真实下单按钮" in html
     assert "没有 Live 开关" in html
     assert "没有关闭 dry-run 按钮" in html
     assert "没有开启 order execution 按钮" in html
     assert "/runtime/testnet/start-dry-run" in html
+    assert "/runtime/testnet/stop-dry-run" in html
     assert "/control/kill-switch/off" in html
 
 
@@ -47,6 +50,28 @@ def test_dashboard_route_does_not_break_health_or_status() -> None:
     with TestClient(app) as client:
         assert client.get("/health").status_code == 200
         assert client.get("/status").status_code == 200
+
+
+def test_dashboard_summary_api_is_read_only_and_compact() -> None:
+    with TestClient(app) as client:
+        response = client.get("/runtime/dashboard-summary")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema_version"] == "dashboard_summary_v1"
+    for key in [
+        "safety",
+        "diagnosis",
+        "shadow",
+        "strategy_plan",
+        "signals",
+        "ai_reviews",
+        "risk",
+        "audit",
+    ]:
+        assert key in payload
+    assert "API_KEY" not in str(payload)
+    assert "sk-" not in str(payload)
 
 
 def test_strategy_and_risk_config_dashboard_apis() -> None:
