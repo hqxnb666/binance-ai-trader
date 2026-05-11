@@ -15,25 +15,25 @@ def test_dashboard_page_returns_local_operations_html() -> None:
 
     assert response.status_code == 200
     html = response.text
-    assert "Binance AI Trader Local Operations Dashboard" in html
-    assert "Runtime" in html
+    assert "Binance AI Trader 本地运维控制台" in html
+    assert "运行时 Runtime" in html
     assert "DataQualityGate" in html
-    assert "Shadow Mode" in html
+    assert "影子模式 Shadow Mode" in html
     assert "RiskEngine" in html
-    assert "Strategy Parameter Center" in html
-    assert "Risk Config Viewer" in html
-    assert "Testnet Readiness Check" in html
-    assert "OpenAI Usage Report" in html
-    assert "Review Workspace" in html
+    assert "策略参数设置中心" in html
+    assert "风控配置只读查看器" in html
+    assert "Testnet Readiness 检查" in html
+    assert "OpenAI 用量报告" in html
+    assert "复盘工作台" in html
 
 
 def test_dashboard_html_contains_safety_boundaries() -> None:
     html = dashboard_html()
 
-    assert "No real order button" in html
-    assert "No Live switch" in html
-    assert "No disable-dry-run button" in html
-    assert "No order execution enable button" in html
+    assert "没有真实下单按钮" in html
+    assert "没有 Live 开关" in html
+    assert "没有关闭 dry-run 按钮" in html
+    assert "没有开启 order execution 按钮" in html
     assert "/runtime/testnet/start-dry-run" in html
     assert "/control/kill-switch/off" in html
 
