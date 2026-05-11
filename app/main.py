@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse  # noqa: E402
 
 from config.settings import get_settings  # noqa: E402
 from dashboard.api import router  # noqa: E402
+from dashboard.web import dashboard_html  # noqa: E402
 from journal.database import SessionLocal, init_db  # noqa: E402
 from runtime.task_manager import RuntimeTaskManager  # noqa: E402
 
@@ -42,6 +43,7 @@ def index() -> str:
       <body>
         <h1>Binance AI Trader MVP</h1>
         <ul>
+          <li><a href="/dashboard">Local Operations Dashboard</a></li>
           <li><a href="/health">Health</a></li>
           <li><a href="/status">Status</a></li>
           <li><a href="/config/safe">Safe Config</a></li>
@@ -50,3 +52,8 @@ def index() -> str:
       </body>
     </html>
     """
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard() -> str:
+    return dashboard_html()

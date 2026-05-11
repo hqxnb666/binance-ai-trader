@@ -108,6 +108,37 @@ Useful endpoints:
 - `POST /control/kill-switch/on`
 - `POST /control/kill-switch/off`
 
+## Local Operations Dashboard
+
+Run FastAPI locally, then open the dashboard:
+
+```powershell
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Open http://127.0.0.1:8000/dashboard.
+
+The dashboard is a local HTML/JavaScript page served by FastAPI. It uses the existing API only and
+does not add a frontend build chain. It shows runtime health, Binance stream status, DataQualityGate
+state, Strategy snapshots, AI SignalReview records, RiskEngine decisions, recent orders, Shadow Mode
+reports, account/position readiness, OpenAI budget, SystemAuditor output, logs, and a review
+workspace for copying a GPT analysis package.
+
+Allowed dashboard actions are intentionally limited:
+
+- Start/stop Testnet dry-run runtime.
+- Refresh local status panels.
+- Run DataQualityGate check.
+- Run Shadow evaluation.
+- Run SystemAuditor.
+- Turn runtime kill switch on.
+- Turn runtime kill switch off after a browser confirmation warning.
+
+The dashboard deliberately does not provide real order buttons, a Live switch, a disable-dry-run
+button, an order execution enable button, configuration editing, Codex automation, or a Testnet
+order lifecycle launcher. It does not call `broker.place_order` and does not change RiskEngine,
+OrderManager, broker, Live guard, or default trading safety settings.
+
 ## Phase 2 Runtime Daemon
 
 The second-stage MVP includes a controlled Testnet runtime daemon. It starts:
