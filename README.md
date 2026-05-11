@@ -118,11 +118,11 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 Open http://127.0.0.1:8000/dashboard.
 
-The dashboard is a local HTML/JavaScript page served by FastAPI. It is now a summary-first console:
-the main page shows safety state, runtime state, key blockers, Shadow Mode totals, StrategyPlan
-status, Signal/AI/Risk summaries, config highlights, and the latest audit summary. Full raw
-diagnostic data is not rendered by default; it stays in memory and can be copied into a GPT review
-package.
+The dashboard is a local HTML/JavaScript page served by FastAPI. It is a Simplified Chinese,
+summary-first console: the main page shows safety state, runtime state, key blockers, Binance stream
+status, DataQualityGate, Strategy snapshots, SignalReview, RiskEngine, OrderManager, Shadow Mode,
+account/position, OpenAI budget, SystemAuditor, and logs as compact cards. Full raw diagnostic data
+is not rendered by default; it stays in memory and can be copied into a GPT review package.
 
 Recommended dashboard flow:
 
@@ -131,13 +131,14 @@ Recommended dashboard flow:
 3. Click `加载完整诊断包`.
 4. Click `复制 GPT 完整复盘包`.
 
-The main page intentionally keeps only five primary buttons: refresh status, run checks, load the
-diagnostic snapshot, copy the GPT review package, and start/stop dry-run depending on runtime state.
-Lower-frequency and riskier controls live inside the collapsed `Advanced` section.
+Start/Stop Dry Run is shown in the top control area, not hidden in the advanced section. The
+diagnostic center keeps the main workflow focused: refresh status, run checks, load the diagnostic
+snapshot, and copy the GPT review package. Lower-frequency and riskier controls live inside the
+collapsed `Advanced` section.
 
 Allowed dashboard actions are still intentionally limited:
 
-- Start/stop Testnet dry-run runtime.
+- Start/stop Testnet dry-run runtime from the visible top control area.
 - Refresh local status panels.
 - Run DataQualityGate, Readiness, Shadow evaluation, and SystemAuditor checks.
 - Turn runtime kill switch on.
@@ -145,6 +146,7 @@ Allowed dashboard actions are still intentionally limited:
 - Load, validate, and save EMA Trend strategy parameters to `config/strategy.yaml`.
 - Load 1-day or 7-day OpenAI usage summaries.
 - Copy frontend state, readiness, strategy optimization, raw diagnostic JSON, or GPT review packages.
+- See clear per-action feedback for loading, success, warning, and failure states.
 
 The dashboard deliberately does not provide real order buttons, a Live switch, a disable-dry-run
 button, an order execution enable button, risk/live/order configuration editing, Codex automation,

@@ -16,17 +16,31 @@ def test_dashboard_page_returns_simplified_console_html() -> None:
 
     assert response.status_code == 200
     html = response.text
-    assert "Binance AI Trader Dashboard" in html
+    assert "Binance AI Trader 控制台" in html
     assert "一键诊断中心" in html
     assert "一键刷新状态" in html
     assert "一键运行检查" in html
     assert "加载完整诊断包" in html
     assert "复制 GPT 完整复盘包" in html
-    assert "Safety Overview" in html
-    assert "Current Diagnosis" in html
-    assert "Shadow 摘要" in html
-    assert "StrategyPlan 摘要" in html
-    assert "Advanced" in html
+    assert "运行控制" in html
+    assert "启动 Dry Run" in html
+    assert "停止 Dry Run" in html
+    assert "安全总览" in html
+    assert "当前结论" in html
+    assert "Shadow Mode" in html
+    assert "运行状态 Runtime" in html
+    assert "行情与网络 Streams" in html
+    assert "数据质量闸门 DataQualityGate" in html
+    assert "策略快照 Strategy Snapshot" in html
+    assert "AI 信号审查 SignalReview" in html
+    assert "风控引擎 RiskEngine" in html
+    assert "订单管理 OrderManager" in html
+    assert "账户与仓位" in html
+    assert "OpenAI 成本预算" in html
+    assert "系统审计 SystemAuditor" in html
+    assert "日志与链路" in html
+    assert "高级操作与配置" in html
+    assert "复盘工作台" in html
 
 
 def test_dashboard_html_keeps_main_actions_small_and_summary_first() -> None:
