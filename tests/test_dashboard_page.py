@@ -24,7 +24,12 @@ def test_dashboard_page_returns_local_operations_html() -> None:
     assert "风控配置只读查看器" in html
     assert "Testnet Readiness 检查" in html
     assert "OpenAI 用量报告" in html
+    assert "完整诊断包 / Diagnostic Snapshot" in html
     assert "复盘工作台" in html
+    assert "加载完整诊断包" in html
+    assert "复制完整诊断包 JSON" in html
+    assert "复制 GPT 完整诊断复盘包" in html
+    assert "blocking_attribution" in html
 
 
 def test_dashboard_html_contains_safety_boundaries() -> None:
@@ -93,6 +98,39 @@ def test_readiness_and_openai_usage_dashboard_apis_are_safe(monkeypatch) -> None
         assert "summary" in usage.json()
         assert "API_KEY" not in str(usage.json())
         assert "sk-" not in str(usage.json())
+
+
+def test_strategy_plan_and_diagnostic_snapshot_apis_are_read_only() -> None:
+    with TestClient(app) as client:
+        latest = client.get("/runtime/strategy-plan/latest")
+        assert latest.status_code == 200
+        assert latest.json()["status"] in {"OK", "NO_ACTIVE_STRATEGY_PLAN"}
+
+        recent = client.get("/runtime/strategy-plan/recent?limit=10")
+        assert recent.status_code == 200
+        assert recent.json()["status"] == "OK"
+        assert "items" in recent.json()
+
+        snapshot = client.get("/runtime/diagnostic-snapshot")
+        assert snapshot.status_code == 200
+        payload = snapshot.json()
+        assert payload["schema_version"] == "diagnostic_snapshot_v1"
+        for key in [
+            "runtime_health",
+            "strategy_config",
+            "risk_config",
+            "active_strategy_plan",
+            "recent_strategy_plans",
+            "last_snapshots",
+            "recent_signals",
+            "shadow_report",
+            "shadow_recent",
+            "blocking_attribution",
+            "audit_latest",
+        ]:
+            assert key in payload
+        assert "API_KEY" not in str(payload)
+        assert "sk-" not in str(payload)
 
 
 def test_dashboard_does_not_add_real_order_routes() -> None:

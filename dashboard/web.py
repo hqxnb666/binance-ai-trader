@@ -72,6 +72,7 @@ def dashboard_html() -> str:
           <a class="nav-chip" href="#strategy-params">策略参数</a>
           <a class="nav-chip" href="#risk-config">风控配置</a>
           <a class="nav-chip" href="#readiness">Readiness</a>
+          <a class="nav-chip" href="#diagnostic-snapshot">诊断包</a>
           <a class="nav-chip" href="#review-workspace">复盘工作台</a>
         </div>
       </nav>
@@ -210,6 +211,23 @@ def dashboard_html() -> str:
           <div class="panel-head"><div><h2>前端系统快照 / 导出</h2><p>导出当前页面内存中的状态用于复盘。不会写入 localStorage。</p></div><span class="module-meta">仅本地</span></div>
           <button class="btn-muted" onclick="copyFrontendSnapshot()">复制前端状态快照</button>
         </section>
+
+        <section id="diagnostic-snapshot" class="panel xl:col-span-2">
+          <div class="panel-head">
+            <div>
+              <h2>完整诊断包 / Diagnostic Snapshot</h2>
+              <p>一次性收集策略复盘所需的核心数据：StrategyPlan、Snapshots、Recent Signals、Risk Config、Shadow 明细、AI Reviews、Risk Decisions、DataQuality、Readiness、OpenAI Usage 和 Audit。它只读，不下单，不改配置。</p>
+            </div>
+            <span id="meta-diagnosticSnapshot" class="module-meta">手动</span>
+          </div>
+          <div class="mb-3 flex flex-wrap gap-2">
+            <button class="btn-primary" onclick="loadDiagnosticSnapshot()">加载完整诊断包</button>
+            <button class="btn-muted" onclick="copyDiagnosticSnapshot()">复制完整诊断包 JSON</button>
+            <button class="btn-muted" onclick="copyFullDiagnosticReviewPackage()">复制 GPT 完整诊断复盘包</button>
+            <button class="btn-muted" onclick="copyMissingDataChecklist()">复制缺失数据清单</button>
+          </div>
+          <div id="diagnostic-snapshot-body" class="space-y-3"></div>
+        </section>
       </div>
 
       <section id="review-workspace" class="panel mt-5">
@@ -226,6 +244,8 @@ def dashboard_html() -> str:
           <button class="btn-muted" onclick="copyStrategyOptimizationPackage()">复制策略优化包</button>
           <button class="btn-muted" onclick="copyFrontendSnapshot()">复制前端状态快照</button>
           <button class="btn-muted" onclick="copyReadinessPackage()">复制 Readiness 复盘包</button>
+          <button class="btn-muted" onclick="copyFullDiagnosticReviewPackage()">复制完整诊断复盘包</button>
+          <button class="btn-muted" onclick="copyMissingDataChecklist()">复制缺失数据清单</button>
           <button class="btn-muted" onclick="clearWorkspace()">清空工作台</button>
         </div>
         <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -258,6 +278,7 @@ def dashboard_html() -> str:
         strategyConfig: mod("/config/strategy"),
         riskConfig: mod("/config/risk"),
         readinessLatest: mod("/runtime/readiness/latest"),
+        diagnosticSnapshot: mod("/runtime/diagnostic-snapshot"),
       };
 
       let strategyDraft = null;
@@ -265,6 +286,7 @@ def dashboard_html() -> str:
       let strategyValidation = null;
       let readinessData = null;
       let openaiUsageData = null;
+      let diagnosticSnapshotData = null;
 
       const style = document.createElement("style");
       style.innerHTML = `
@@ -584,9 +606,41 @@ def dashboard_html() -> str:
         const summary = get(usage, "summary", {});
         document.getElementById("openai-usage-body").innerHTML = `<div class="kv-grid">${kv("天数", get(usage, "days"))}${kv("总估算成本", get(summary, "estimated_cost_usd"))}${kv("调用总数", get(summary, "total_calls"))}${kv("每日预算", get(usage, "daily_budget_usd"))}${kv("每月预算", get(usage, "monthly_budget_usd"))}${kv("状态分布", JSON.stringify(get(usage, "status_breakdown", {})))}</div>${jsonBlock("按 role 分组", get(summary, "by_role", {}))}${jsonBlock("按 model 分组", get(summary, "by_model", {}))}${jsonBlock("警告", get(usage, "warnings", []))}${jsonBlock("usage 原始 JSON", usage)}`;
       }
+      async function loadDiagnosticSnapshot() {
+        document.getElementById("diagnostic-snapshot-body").innerHTML = `<div class="rounded-md bg-blue-50 p-3 text-sm text-blue-700">正在加载完整诊断包。此操作只读，不下单，不改配置。</div>`;
+        try {
+          diagnosticSnapshotData = await fetchJson("/runtime/diagnostic-snapshot?shadow_limit=100&signal_limit=50&plan_limit=10");
+          api.diagnosticSnapshot.data = diagnosticSnapshotData;
+          api.diagnosticSnapshot.last = new Date().toLocaleTimeString();
+          renderDiagnosticSnapshot();
+        } catch (error) {
+          api.diagnosticSnapshot.error = error.message || String(error);
+          document.getElementById("diagnostic-snapshot-body").innerHTML = `<div class="rounded-md bg-red-50 p-3 text-sm text-red-700">${esc(error.message || error)}</div>`;
+        }
+      }
+      function unavailableSections(snapshot) {
+        const missing = [];
+        Object.entries(snapshot || {}).forEach(([key, value]) => {
+          if (value && typeof value === "object" && get(value, "status") === "NOT_AVAILABLE") missing.push(`${key}: ${get(value, "reason", "NOT_AVAILABLE")}`);
+          if (value && typeof value === "object" && (get(value, "status") === "NO_ACTIVE_STRATEGY_PLAN" || get(value, "status") === "NO_READINESS_CHECK_RUN" || get(value, "status") === "NO_AUDIT_REPORT")) missing.push(`${key}: ${get(value, "status")}`);
+        });
+        const errors = get(snapshot, "diagnostics.errors", []) || [];
+        errors.forEach((item) => missing.push(`${get(item, "section", "unknown")}: ${get(item, "error", "error")}`));
+        return [...new Set(missing)];
+      }
+      function renderDiagnosticSnapshot() {
+        const snap = diagnosticSnapshotData || api.diagnosticSnapshot.data || {};
+        if (!snap || !get(snap, "schema_version")) {
+          document.getElementById("diagnostic-snapshot-body").innerHTML = `<div class="rounded-md bg-slate-50 p-3 text-sm text-slate-500">尚未加载完整诊断包。点击“加载完整诊断包”后，可一键复制 GPT 复盘材料。</div>`;
+          return;
+        }
+        const activePlan = get(snap, "active_strategy_plan.plan", {});
+        const missing = unavailableSections(snap);
+        document.getElementById("diagnostic-snapshot-body").innerHTML = `<div class="kv-grid">${kv("created_at", get(snap, "created_at"))}${kv("primary_blockers", (get(snap, "diagnostic_summary.primary_blockers", []) || []).join(", "))}${kv("active_plan.risk_mode", get(activePlan, "risk_mode"))}${kv("active_plan.trade_bias", get(activePlan, "trade_bias"))}${kv("active_plan.requires_human_review", get(activePlan, "requires_human_review"))}${kv("recent_signals count", (get(snap, "recent_signals", []) || []).length)}${kv("shadow_recent count", (get(snap, "shadow_recent", []) || []).length)}${kv("missing sections", missing.length)}</div>${jsonBlock("blocking_attribution", get(snap, "blocking_attribution", {}))}${jsonBlock("active_strategy_plan", get(snap, "active_strategy_plan", {}))}${jsonBlock("缺失 / 不可用数据", missing)}${jsonBlock("diagnostic_summary", get(snap, "diagnostic_summary", {}))}`;
+      }
 
       function render() {
-        renderMeta(); renderSafety(); renderRuntime(); renderStreams(); renderDataQuality(); renderStrategy(); renderAI(); renderRisk(); renderOrders(); renderShadow(); renderAccount(); renderBudget(); renderAudit(); renderLogs(); renderStrategyCenter(); renderRiskConfig(); renderReadiness(); renderOpenAIUsage();
+        renderMeta(); renderSafety(); renderRuntime(); renderStreams(); renderDataQuality(); renderStrategy(); renderAI(); renderRisk(); renderOrders(); renderShadow(); renderAccount(); renderBudget(); renderAudit(); renderLogs(); renderStrategyCenter(); renderRiskConfig(); renderReadiness(); renderOpenAIUsage(); renderDiagnosticSnapshot();
       }
 
       async function copyToClipboard(label, text) {
@@ -605,9 +659,9 @@ def dashboard_html() -> str:
       function copyAuditPrompt() { return copyToClipboard("GPT 审计复盘提示词", `请分析以下 SystemAuditor 报告，找出主要运行风险和安全边界风险，并给出有边界的后续修改建议。不要建议绕过任何安全闸门。\n\nJSON:\n${JSON.stringify(api.auditLatest.data || {}, null, 2)}`); }
       function copyCostReviewPrompt() { return copyToClipboard("GPT 成本复盘提示词", `请分析以下 OpenAI 用量报告：哪些 role/model 成本较高、是否有预算风险、如何在不切换到更贵模型的前提下降低成本。\n\nJSON:\n${JSON.stringify(openaiUsageData || {}, null, 2)}`); }
       function copyTextArea(id) { return copyToClipboard("工作台段落", document.getElementById(id).value); }
-      function frontendSnapshot() { return { safety: api.health.data || {}, status: api.status.data || {}, data_quality: api.dataQuality.data || {}, shadow_report: api.shadowReport.data || {}, ai_reviews: api.aiReviews.data || [], risk_decisions: api.riskDecisions.data || [], readiness: readinessData || api.readinessLatest.data || {}, strategy_config: api.strategyConfig.data || {}, openai_usage: openaiUsageData || {}, audit: api.auditLatest.data || {} }; }
+      function frontendSnapshot() { return { safety: api.health.data || {}, status: api.status.data || {}, data_quality: api.dataQuality.data || {}, shadow_report: api.shadowReport.data || {}, ai_reviews: api.aiReviews.data || [], risk_decisions: api.riskDecisions.data || [], readiness: readinessData || api.readinessLatest.data || {}, strategy_config: api.strategyConfig.data || {}, openai_usage: openaiUsageData || {}, audit: api.auditLatest.data || {}, diagnostic_snapshot: diagnosticSnapshotData || api.diagnosticSnapshot.data || {} }; }
       function copyFrontendSnapshot() { return copyJson("Frontend State Snapshot", frontendSnapshot()); }
-      function autoFillWorkspace() { document.getElementById("workspace-shadow").value = JSON.stringify(api.shadowReport.data || {}, null, 2); document.getElementById("workspace-ai").value = JSON.stringify(api.aiReviews.data || [], null, 2); document.getElementById("workspace-risk").value = JSON.stringify(api.riskDecisions.data || [], null, 2); document.getElementById("workspace-extra").value = JSON.stringify({ safety_overview: api.health.data || {}, readiness: readinessData || api.readinessLatest.data || {}, strategy_config: api.strategyConfig.data || {}, openai_usage: openaiUsageData || {}, data_quality: api.dataQuality.data || {}, audit: api.auditLatest.data || {} }, null, 2); }
+      function autoFillWorkspace() { document.getElementById("workspace-shadow").value = JSON.stringify(api.shadowReport.data || {}, null, 2); document.getElementById("workspace-ai").value = JSON.stringify(api.aiReviews.data || [], null, 2); document.getElementById("workspace-risk").value = JSON.stringify(api.riskDecisions.data || [], null, 2); document.getElementById("workspace-extra").value = JSON.stringify({ safety_overview: api.health.data || {}, readiness: readinessData || api.readinessLatest.data || {}, strategy_config: api.strategyConfig.data || {}, openai_usage: openaiUsageData || {}, data_quality: api.dataQuality.data || {}, audit: api.auditLatest.data || {}, diagnostic_snapshot: diagnosticSnapshotData || api.diagnosticSnapshot.data || {} }, null, 2); }
       function clearWorkspace() { ["workspace-shadow", "workspace-ai", "workspace-risk", "workspace-extra"].forEach((id) => { document.getElementById(id).value = ""; }); }
       function reviewPackageTemplate(kind) {
         const extra = document.getElementById("workspace-extra").value;
@@ -664,6 +718,51 @@ ${extra}
       function copyReviewPackage() { return copyToClipboard("完整 GPT 复盘包", reviewPackageTemplate("完整 Dashboard 复盘")); }
       function copyStrategyOptimizationPackage() { return copyToClipboard("策略优化包", reviewPackageTemplate("策略参数优化")); }
       function copyReadinessPackage() { return copyToClipboard("Readiness 复盘包", `请复盘以下 Testnet readiness 报告。不要建议新增 Dashboard 真实下单按钮；真实 lifecycle 必须保持 CLI-only。\n\n${JSON.stringify(readinessData || api.readinessLatest.data || {}, null, 2)}`); }
+      function copyDiagnosticSnapshot() { return copyJson("完整诊断包 JSON", diagnosticSnapshotData || api.diagnosticSnapshot.data || {}); }
+      function copyMissingDataChecklist() {
+        const snap = diagnosticSnapshotData || api.diagnosticSnapshot.data || {};
+        const missing = unavailableSections(snap);
+        const text = missing.length ? missing.map((item) => `- ${item}`).join("\n") : "- 当前诊断包未发现 NOT_AVAILABLE / NO_* 缺失项。";
+        return copyToClipboard("缺失数据清单", `binance-ai-trader 诊断包缺失数据清单\n\n${text}`);
+      }
+      function copyFullDiagnosticReviewPackage() {
+        const snap = diagnosticSnapshotData || api.diagnosticSnapshot.data || {};
+        const packageText = `项目：binance-ai-trader
+当前目标：基于完整诊断快照，判断 Testnet dry-run / Shadow Mode 下系统为什么没有产生 WOULD_PLACE_ORDER，并给出小步、安全、可验证的优化建议。
+
+安全边界：
+1. 不允许绕过 RiskEngine。
+2. 不允许启用 Live。
+3. 不允许 GPT 直接下单。
+4. 不允许修改 OrderManager 唯一订单入口。
+5. 不允许新增 Futures、Margin、Leverage。
+6. 不允许为了增加交易数量而关闭 DataQualityGate。
+7. 不允许直接放宽风控上限来换取交易。
+8. 所有策略参数修改必须先 backtest，再 Shadow Mode 验证。
+
+请判断：
+1. 当前主要问题属于哪一层：
+   - 数据质量
+   - 本地 EMA 策略
+   - StrategyPlan no-trade / human review
+   - AI SignalReview
+   - RiskEngine 仓位限制
+   - Testnet 账户状态污染
+   - Shadow 评价口径
+   - 样本不足
+   - 执行链路
+2. 当前 0 WOULD_PLACE_ORDER 的第一主因和第二主因分别是什么。
+3. 是否需要先清理 dry-run / shadow 账户基线，而不是直接调 EMA 参数。
+4. EMA 参数是否有调整必要；如果有，一次最多建议 1-2 个参数。
+5. 哪些地方绝对不能改。
+6. 给出一个有边界的 Codex 修改提示词。
+7. 给出修改后的验证命令。
+
+【Diagnostic Snapshot】
+${JSON.stringify(snap, null, 2)}
+`;
+        return copyToClipboard("GPT 完整诊断复盘包", packageText);
+      }
 
       refreshAll();
       setInterval(() => fetchModule("health"), 5000);

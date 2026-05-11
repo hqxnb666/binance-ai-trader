@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
@@ -32,6 +32,7 @@ from journal.audit_store import (
 )
 from journal.daily_report import build_daily_report, upsert_daily_report
 from journal.models import (
+    AIAnalysis,
     DailyReport,
     OpenAIUsageRecord,
     OrderRecord,
@@ -42,6 +43,11 @@ from journal.models import (
 )
 from journal.openai_usage_store import summarize_openai_usage
 from journal.pipeline_audit import pipeline_audits_by_run_id, recent_pipeline_audits
+from journal.strategy_plan_store import (
+    get_active_strategy_plan,
+    list_recent_strategy_plans,
+    sanitize_json,
+)
 from risk.circuit_breaker import CircuitBreaker
 from runtime.task_manager import RuntimeTaskManager
 from scripts.verify_testnet_order_readiness import build_readiness_report
@@ -121,7 +127,11 @@ def recent_signals(
         {
             "id": row.id,
             "symbol": row.symbol,
+            "strategy_name": row.strategy_name,
+            "strategy_version": row.strategy_version,
+            "timeframe": row.timeframe,
             "side": row.side,
+            "signal_type": row.signal_type,
             "confidence": float(row.confidence),
             "reason": row.reason,
             "created_at": row.created_at.isoformat(),
@@ -402,6 +412,184 @@ def runtime_openai_usage(
     }
 
 
+@router.get("/runtime/strategy-plan/latest")
+def runtime_strategy_plan_latest(
+    session: Session = Depends(db_session_dependency),
+) -> dict[str, object]:
+    plan = get_active_strategy_plan(session)
+    if plan is None:
+        return {"status": "NO_ACTIVE_STRATEGY_PLAN", "plan": None}
+    return {"status": "OK", "plan": _strategy_plan_to_dict(plan)}
+
+
+@router.get("/runtime/strategy-plan/recent")
+def runtime_strategy_plan_recent(
+    limit: int = Query(default=10, ge=1, le=50),
+    session: Session = Depends(db_session_dependency),
+) -> dict[str, object]:
+    return {
+        "status": "OK",
+        "items": [
+            _strategy_plan_to_dict(plan)
+            for plan in list_recent_strategy_plans(session, limit=limit)
+        ],
+    }
+
+
+@router.get("/runtime/diagnostic-snapshot")
+def runtime_diagnostic_snapshot(
+    request: Request,
+    shadow_limit: int = Query(default=100, ge=1, le=300),
+    signal_limit: int = Query(default=50, ge=1, le=200),
+    plan_limit: int = Query(default=10, ge=1, le=50),
+    manager: RuntimeTaskManager = Depends(runtime_manager),
+    session: Session = Depends(db_session_dependency),
+    settings: Settings = Depends(settings_dependency),
+) -> dict[str, object]:
+    errors: list[dict[str, object]] = []
+
+    runtime_health_payload = _safe_section(
+        "runtime_health",
+        lambda: {
+            **manager.health(),
+            "network_readiness": _network_readiness(getattr(manager, "latest_diagnostics", None)),
+        },
+        errors,
+    )
+    safe_config_payload = _safe_section("safe_config", settings.safe_config, errors)
+    status_payload = _safe_section(
+        "status",
+        lambda: _status_payload(settings=settings, session=session),
+        errors,
+    )
+    strategy_config_payload = _safe_section("strategy_config", strategy_config_response, errors)
+    risk_config_payload = _safe_section(
+        "risk_config",
+        lambda: {"config": load_risk_config(), "read_only": True},
+        errors,
+    )
+    active_plan_payload = _safe_section(
+        "active_strategy_plan",
+        lambda: _active_strategy_plan_payload(session),
+        errors,
+    )
+    recent_plans_payload = _safe_section(
+        "recent_strategy_plans",
+        lambda: [
+            _strategy_plan_to_dict(plan)
+            for plan in list_recent_strategy_plans(session, plan_limit)
+        ],
+        errors,
+    )
+    last_snapshots_payload = _safe_section("last_snapshots", manager.last_snapshots, errors)
+    recent_signals_payload = _safe_section(
+        "recent_signals",
+        lambda: _recent_signals_payload(session, signal_limit),
+        errors,
+    )
+    ai_reviews_payload = _safe_section(
+        "last_ai_reviews",
+        lambda: manager.last_ai_reviews() or _recent_ai_reviews_payload(session, signal_limit),
+        errors,
+    )
+    risk_decisions_payload = _safe_section(
+        "last_risk_decisions",
+        lambda: manager.last_risk_decisions()
+        or _recent_risk_decisions_payload(session, signal_limit),
+        errors,
+    )
+    data_quality_payload = _safe_section("data_quality", manager.latest_data_quality, errors)
+    shadow_report_payload = _safe_section("shadow_report", manager.shadow_report, errors)
+    shadow_recent_payload = _safe_section(
+        "shadow_recent", lambda: manager.shadow_recent(shadow_limit), errors
+    )
+    shadow_open_payload = _safe_section(
+        "shadow_open", lambda: manager.shadow_open(shadow_limit), errors
+    )
+    readiness_payload = _safe_section(
+        "readiness_latest",
+        lambda: getattr(request.app.state, "latest_readiness_report", None)
+        or {"status": "NO_READINESS_CHECK_RUN"},
+        errors,
+    )
+    openai_usage_payload = _safe_section(
+        "openai_usage_1d",
+        lambda: _openai_usage_payload(session=session, settings=settings, days=1),
+        errors,
+    )
+    audit_payload = _safe_section(
+        "audit_latest",
+        lambda: (
+            audit_record_to_dict(get_latest_trading_issue_report(session))
+            if get_latest_trading_issue_report(session)
+            else {"status": "NO_AUDIT_REPORT"}
+        ),
+        errors,
+    )
+    blocking_attribution = _blocking_attribution(
+        shadow_recent=shadow_recent_payload if isinstance(shadow_recent_payload, list) else [],
+        risk_decisions=risk_decisions_payload if isinstance(risk_decisions_payload, list) else [],
+        ai_reviews=ai_reviews_payload if isinstance(ai_reviews_payload, list) else [],
+    )
+
+    snapshot = {
+        "schema_version": "diagnostic_snapshot_v1",
+        "created_at": datetime.now(UTC).isoformat(),
+        "purpose": "GPT strategy/risk/shadow review package",
+        "safety_note": (
+            "Read-only diagnostic snapshot. No order placement, no config mutation, no secrets."
+        ),
+        "runtime_health": runtime_health_payload,
+        "safe_config": safe_config_payload,
+        "status": status_payload,
+        "strategy_config": strategy_config_payload,
+        "risk_config": risk_config_payload,
+        "active_strategy_plan": active_plan_payload,
+        "recent_strategy_plans": recent_plans_payload,
+        "last_snapshots": last_snapshots_payload,
+        "recent_signals": recent_signals_payload,
+        "last_ai_reviews": ai_reviews_payload,
+        "last_risk_decisions": risk_decisions_payload,
+        "data_quality": data_quality_payload,
+        "shadow_report": shadow_report_payload,
+        "shadow_recent": shadow_recent_payload,
+        "shadow_open": shadow_open_payload,
+        "readiness_latest": readiness_payload,
+        "openai_usage_1d": openai_usage_payload,
+        "audit_latest": audit_payload,
+        "blocking_attribution": blocking_attribution,
+        "diagnostic_summary": _diagnostic_summary(
+            active_strategy_plan=active_plan_payload,
+            data_quality=data_quality_payload,
+            readiness=readiness_payload,
+            blocking_attribution=blocking_attribution,
+            errors=errors,
+            counts={
+                "recent_strategy_plans": len(recent_plans_payload)
+                if isinstance(recent_plans_payload, list)
+                else 0,
+                "recent_signals": len(recent_signals_payload)
+                if isinstance(recent_signals_payload, list)
+                else 0,
+                "shadow_recent": len(shadow_recent_payload)
+                if isinstance(shadow_recent_payload, list)
+                else 0,
+                "shadow_open": len(shadow_open_payload)
+                if isinstance(shadow_open_payload, list)
+                else 0,
+                "last_ai_reviews": len(ai_reviews_payload)
+                if isinstance(ai_reviews_payload, list)
+                else 0,
+                "last_risk_decisions": len(risk_decisions_payload)
+                if isinstance(risk_decisions_payload, list)
+                else 0,
+            },
+        ),
+        "diagnostics": {"errors": errors},
+    }
+    return sanitize_json(snapshot)
+
+
 @router.get("/runtime/audit/recent")
 def runtime_audit_recent(
     limit: int = 50,
@@ -553,3 +741,237 @@ def _openai_usage_warnings(summary: dict[str, Any], settings: Settings) -> list[
     if "skipped_budget" in status_counts:
         warnings.append("BudgetGuard skipped at least one OpenAI call.")
     return warnings
+
+
+def _safe_section(
+    name: str,
+    loader: Any,
+    errors: list[dict[str, object]],
+) -> Any:
+    try:
+        return sanitize_json(loader())
+    except Exception as exc:  # noqa: BLE001 - diagnostic snapshot should be fail-soft
+        errors.append({"section": name, "error": str(exc)[:500]})
+        return {"status": "NOT_AVAILABLE", "reason": str(exc)[:500]}
+
+
+def _status_payload(*, settings: Settings, session: Session) -> dict[str, object]:
+    return {
+        "app_env": settings.app_env,
+        "trading_mode": settings.trading_mode,
+        "live_trading_enabled": settings.live_trading_enabled and settings.live_trading.enabled,
+        "kill_switch_enabled": CircuitBreaker(session).is_enabled(),
+        "symbols": settings.symbols.enabled_symbols,
+    }
+
+
+def _strategy_plan_to_dict(plan: Any) -> dict[str, object]:
+    raw_output = sanitize_json(plan.raw_output_json or {})
+    return {
+        "id": plan.id,
+        "status": plan.status,
+        "created_at": plan.created_at.isoformat() if plan.created_at else None,
+        "updated_at": plan.updated_at.isoformat() if plan.updated_at else None,
+        "expires_at": plan.expires_at.isoformat() if plan.expires_at else None,
+        "planning_mode": plan.planning_mode,
+        "plan_action": plan.plan_action,
+        "model": plan.model,
+        "schema_version": plan.schema_version,
+        "market_regime": plan.market_regime,
+        "risk_mode": plan.risk_mode,
+        "trade_bias": plan.trade_bias,
+        "requires_human_review": plan.requires_human_review,
+        "allowed_actions": plan.allowed_actions_json,
+        "blocked_actions": plan.blocked_actions_json,
+        "symbol_permissions": plan.symbol_permissions_json,
+        "symbol_scope": plan.symbol_scope_json,
+        "max_position_pct": float(plan.max_position_pct)
+        if plan.max_position_pct is not None
+        else None,
+        "confidence": float(plan.confidence),
+        "confidence_threshold": raw_output.get("confidence_threshold"),
+        "reason_codes": plan.reason_codes_json,
+        "summary": plan.explanation,
+        "explanation": plan.explanation,
+        "raw_output_json": raw_output,
+        "output_hash": plan.output_hash,
+    }
+
+
+def _active_strategy_plan_payload(session: Session) -> dict[str, object]:
+    plan = get_active_strategy_plan(session)
+    if plan is None:
+        return {"status": "NO_ACTIVE_STRATEGY_PLAN", "plan": None}
+    return {"status": "OK", "plan": _strategy_plan_to_dict(plan)}
+
+
+def _recent_signals_payload(session: Session, limit: int) -> list[dict[str, object]]:
+    rows = session.scalars(
+        select(StrategySignal).order_by(desc(StrategySignal.created_at)).limit(limit)
+    ).all()
+    return [
+        {
+            "id": row.id,
+            "symbol": row.symbol,
+            "side": row.side,
+            "confidence": float(row.confidence),
+            "reason": row.reason,
+            "strategy_name": row.strategy_name,
+            "strategy_version": row.strategy_version,
+            "timeframe": row.timeframe,
+            "signal_type": row.signal_type,
+            "created_at": row.created_at.isoformat(),
+        }
+        for row in rows
+    ]
+
+
+def _recent_ai_reviews_payload(session: Session, limit: int) -> list[dict[str, object]]:
+    rows = session.scalars(
+        select(AIAnalysis).order_by(desc(AIAnalysis.created_at)).limit(limit)
+    ).all()
+    return [
+        {
+            "id": row.id,
+            "symbol": row.symbol,
+            "analysis_type": row.analysis_type,
+            "model": row.model,
+            "schema_valid": row.schema_valid,
+            "decision": row.decision,
+            "confidence": float(row.confidence) if row.confidence is not None else None,
+            "risk_level": row.risk_level,
+            "created_at": row.created_at.isoformat(),
+            "output_json": sanitize_json(row.output_json),
+        }
+        for row in rows
+    ]
+
+
+def _recent_risk_decisions_payload(session: Session, limit: int) -> list[dict[str, object]]:
+    rows = session.scalars(
+        select(RiskDecision).order_by(desc(RiskDecision.created_at)).limit(limit)
+    ).all()
+    return [
+        {
+            "id": row.id,
+            "symbol": row.symbol,
+            "signal_id": row.signal_id,
+            "ai_analysis_id": row.ai_analysis_id,
+            "approved": row.approved,
+            "reason": row.reason,
+            "risk_state_json": sanitize_json(row.risk_state_json),
+            "created_at": row.created_at.isoformat(),
+        }
+        for row in rows
+    ]
+
+
+def _openai_usage_payload(*, session: Session, settings: Settings, days: int) -> dict[str, object]:
+    summary = summarize_openai_usage(session, days=days)
+    return {
+        "created_at": datetime.now(UTC).isoformat(),
+        "days": days,
+        "summary": summary,
+        "daily_budget_usd": settings.openai_daily_budget_usd,
+        "monthly_budget_usd": settings.openai_monthly_budget_usd,
+        "warnings": _openai_usage_warnings(summary, settings),
+        "safety_note": "No raw prompts, raw responses, API keys, or request headers are returned.",
+    }
+
+
+def _blocking_attribution(
+    *,
+    shadow_recent: list[dict[str, object]],
+    risk_decisions: list[dict[str, object]],
+    ai_reviews: list[dict[str, object]],
+) -> dict[str, int]:
+    counts = {
+        "strategy_no_trade": 0,
+        "strategy_plan_blocked": 0,
+        "ai_human_review": 0,
+        "ai_rejected": 0,
+        "risk_symbol_position_limit": 0,
+        "risk_total_position_limit": 0,
+        "data_quality_blocked": 0,
+        "would_place_order": 0,
+        "unknown": 0,
+    }
+    for row in shadow_recent:
+        decision_type = str(row.get("decision_type", "")).upper()
+        text = " ".join(
+            [
+                str(row.get("reason", "")),
+                " ".join(str(item) for item in row.get("reason_codes", []) or []),
+            ]
+        ).lower()
+        if decision_type == "WOULD_PLACE_ORDER":
+            counts["would_place_order"] += 1
+        elif decision_type == "DATA_QUALITY_BLOCKED":
+            counts["data_quality_blocked"] += 1
+        elif "strategy_no_trade" in text or "no_trade" in text:
+            counts["strategy_no_trade"] += 1
+        elif "active strategyplan" in text or "strategy plan" in text:
+            counts["strategy_plan_blocked"] += 1
+        elif "human review" in text or "human_review" in text:
+            counts["ai_human_review"] += 1
+        elif "ai rejected" in text or "reject_signal" in text:
+            counts["ai_rejected"] += 1
+        elif "symbol position limit" in text:
+            counts["risk_symbol_position_limit"] += 1
+        elif "total position limit" in text:
+            counts["risk_total_position_limit"] += 1
+        else:
+            counts["unknown"] += 1
+    for row in risk_decisions:
+        reason = str(row.get("reason", "")).lower()
+        if "symbol position limit" in reason:
+            counts["risk_symbol_position_limit"] += 1
+        elif "total position limit" in reason:
+            counts["risk_total_position_limit"] += 1
+    for row in ai_reviews:
+        output_json = row.get("output_json")
+        output_json = output_json if isinstance(output_json, dict) else {}
+        decision = str(row.get("decision") or output_json.get("decision", "")).upper()
+        if "HUMAN_REVIEW" in decision:
+            counts["ai_human_review"] += 1
+        elif "REJECT" in decision:
+            counts["ai_rejected"] += 1
+    return counts
+
+
+def _diagnostic_summary(
+    *,
+    active_strategy_plan: Any,
+    data_quality: Any,
+    readiness: Any,
+    blocking_attribution: dict[str, int],
+    errors: list[dict[str, object]],
+    counts: dict[str, int],
+) -> dict[str, object]:
+    primary_blockers: list[str] = []
+    notes: list[str] = []
+    if isinstance(data_quality, dict) and data_quality.get("overall_status") in {
+        "CRITICAL",
+        "DEGRADED",
+    }:
+        primary_blockers.append(f"DATA_QUALITY_{data_quality.get('overall_status')}")
+    if isinstance(readiness, dict):
+        for blocker in readiness.get("blockers", []) or []:
+            primary_blockers.append(str(blocker))
+    if isinstance(active_strategy_plan, dict):
+        plan = active_strategy_plan.get("plan") or {}
+        if plan and plan.get("risk_mode") == "no_trade":
+            primary_blockers.append("ACTIVE_STRATEGY_PLAN_NO_TRADE")
+        if plan and plan.get("requires_human_review"):
+            primary_blockers.append("ACTIVE_STRATEGY_PLAN_REQUIRES_HUMAN_REVIEW")
+    if blocking_attribution.get("would_place_order", 0) == 0:
+        notes.append("No WOULD_PLACE_ORDER decisions in the selected shadow sample.")
+    if errors:
+        notes.append(
+            "One or more diagnostic sections were unavailable; inspect diagnostics.errors."
+        )
+    return {
+        "primary_blockers": sorted(set(primary_blockers)),
+        "counts": counts,
+        "notes": notes,
+    }

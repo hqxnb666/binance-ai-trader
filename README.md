@@ -162,6 +162,33 @@ Real Testnet lifecycle remains CLI-only. Even if the dashboard readiness panel s
 `ready_for_real_testnet_order=true`, this project does not expose a dashboard order button; use the
 CLI readiness and lifecycle scripts with explicit confirmations.
 
+### Dashboard Diagnostic Snapshot
+
+Dashboard V2 includes a one-click diagnostic package for GPT review. Open `/dashboard`, go to
+`完整诊断包 / Diagnostic Snapshot`, then click:
+
+- `加载完整诊断包` to call `GET /runtime/diagnostic-snapshot`.
+- `复制完整诊断包 JSON` to copy the raw sanitized diagnostic snapshot.
+- `复制 GPT 完整诊断复盘包` to copy a prompt plus all review data.
+- `复制缺失数据清单` to see which sections are still unavailable.
+
+The diagnostic snapshot is read-only. It does not place orders, mutate config, call OpenAI, run a
+Testnet lifecycle script, or expose API keys, secrets, signed query strings, `.env`, raw prompts, or
+raw responses.
+
+It collects the core materials normally needed for strategy and Shadow Mode review:
+
+- Active StrategyPlan and recent StrategyPlans.
+- Recent StrategySignals and latest market snapshots.
+- Current strategy config and read-only risk config.
+- Shadow report, recent Shadow decisions, and open Shadow decisions.
+- AI reviews and RiskEngine decisions.
+- DataQualityGate, readiness, runtime health, account/position, budget, and audit summaries.
+
+If Shadow Mode shows `0 WOULD_PLACE_ORDER`, first inspect `blocking_attribution` and
+`active_strategy_plan`. They usually tell whether the primary blocker is StrategyPlan no-trade /
+human review, AI rejection, RiskEngine position limits, DataQualityGate, or missing runtime data.
+
 ## Phase 2 Runtime Daemon
 
 The second-stage MVP includes a controlled Testnet runtime daemon. It starts:
