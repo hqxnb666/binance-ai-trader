@@ -80,6 +80,9 @@ def test_shadow_store_lifecycle_and_report_no_secret_leak() -> None:
     report = build_shadow_report(session)
     assert report.total_decisions == 1
     assert report.simulated_total_pnl_usdt == "1.000000000000"
+    assert "local_candidate_count" in report.attribution_summary
+    assert report.primary_blocking_layer == "NO_SAMPLES"
+    assert report.human_summary
     rendered = str(shadow_decision_to_dict(record)).upper()
     assert "SECRET" not in rendered
     assert "API_KEY" not in rendered

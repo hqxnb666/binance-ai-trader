@@ -126,4 +126,7 @@ class ShadowReport(BaseModel):
     best_shadow_trade: ShadowTradeSummary | None
     worst_shadow_trade: ShadowTradeSummary | None
     top_rejection_reasons: list[ShadowRejectionReason]
+    attribution_summary: dict[str, int] = Field(default_factory=dict)
+    primary_blocking_layer: str = "NO_SAMPLES"
+    human_summary: list[str] = Field(default_factory=list)
     summary: str

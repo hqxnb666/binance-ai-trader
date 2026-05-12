@@ -218,6 +218,9 @@ class Settings(BaseModel):
     shadow_mode_track_mfe_mae: bool = True
     shadow_mode_allow_when_dry_run: bool = True
     shadow_mode_disable_when_real_order_enabled: bool = True
+    shadow_attribution_enabled: bool = True
+    shadow_attribution_evaluate_beyond_strategy_plan: bool = True
+    shadow_attribution_max_records_per_cycle: int = 10
     openai_daily_budget_usd: float = 1.0
     openai_monthly_budget_usd: float = 20.0
     openai_strategy_daily_call_limit: int = 24
@@ -357,6 +360,13 @@ class Settings(BaseModel):
                 "allow_when_dry_run": self.shadow_mode_allow_when_dry_run,
                 "disable_when_real_order_enabled": (
                     self.shadow_mode_disable_when_real_order_enabled
+                ),
+                "attribution_enabled": self.shadow_attribution_enabled,
+                "attribution_evaluate_beyond_strategy_plan": (
+                    self.shadow_attribution_evaluate_beyond_strategy_plan
+                ),
+                "attribution_max_records_per_cycle": (
+                    self.shadow_attribution_max_records_per_cycle
                 ),
             },
             "symbols": self.symbols.model_dump(),
@@ -504,6 +514,13 @@ def load_settings(base_dir: Path = BASE_DIR) -> Settings:
         shadow_mode_allow_when_dry_run=_env_bool("SHADOW_MODE_ALLOW_WHEN_DRY_RUN", True),
         shadow_mode_disable_when_real_order_enabled=_env_bool(
             "SHADOW_MODE_DISABLE_WHEN_REAL_ORDER_ENABLED", True
+        ),
+        shadow_attribution_enabled=_env_bool("SHADOW_ATTRIBUTION_ENABLED", True),
+        shadow_attribution_evaluate_beyond_strategy_plan=_env_bool(
+            "SHADOW_ATTRIBUTION_EVALUATE_BEYOND_STRATEGY_PLAN", True
+        ),
+        shadow_attribution_max_records_per_cycle=_env_int(
+            "SHADOW_ATTRIBUTION_MAX_RECORDS_PER_CYCLE", 10
         ),
         openai_daily_budget_usd=_env_float("OPENAI_DAILY_BUDGET_USD", 1.0),
         openai_monthly_budget_usd=_env_float("OPENAI_MONTHLY_BUDGET_USD", 20.0),

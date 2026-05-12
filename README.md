@@ -595,6 +595,43 @@ MFE and MAE are tracked for observed favorable/adverse movement. Spot `SELL` wit
 inventory is invalidated rather than treated as a short. Shadow PnL is not account PnL and is not a
 profit promise.
 
+Shadow attribution adds a separate read-only diagnostic layer. The real order path remains strict:
+DataQualityGate -> StrategyPlan -> SignalReview -> RiskEngine -> OrderManager. Attribution records
+where a local EMA candidate stopped without changing that path:
+
+- `LOCAL_STRATEGY_NO_SIGNAL`: EMA did not produce a candidate.
+- `STRATEGY_PLAN_BLOCKED_REAL_ORDER` or `STRATEGY_PLAN_OBSERVE_ONLY`: a candidate existed, but
+  StrategyPlan would block the real order path.
+- `AI_HUMAN_REVIEW` / `AI_REJECTED`: SignalReview prevented RiskEngine approval.
+- `RISK_SYMBOL_POSITION_LIMIT`, `RISK_TOTAL_POSITION_LIMIT`, or `RISK_REJECTED`: RiskEngine blocked
+  the candidate.
+- `WOULD_PLACE_ORDER_SHADOW_ONLY`: the signal passed gates in dry-run and would have reached the
+  order path, but no real order was submitted.
+
+Configuration:
+
+```text
+SHADOW_ATTRIBUTION_ENABLED=true
+SHADOW_ATTRIBUTION_EVALUATE_BEYOND_STRATEGY_PLAN=true
+SHADOW_ATTRIBUTION_MAX_RECORDS_PER_CYCLE=10
+```
+
+These settings only affect Shadow diagnostics. They do not enable real orders, do not bypass
+RiskEngine, do not call `broker.place_order`, and do not change StrategyPlan behavior for real order
+approval. If `WOULD_PLACE_ORDER=0`, inspect `attribution_summary.primary_blocking_layer` and:
+
+- `local_candidate_count`
+- `strategy_plan_blocked_real_order_count`
+- `ai_human_review_count`
+- `risk_rejected_count`
+- `would_place_order_shadow_count`
+- `would_place_order_real_path_count`
+
+If `local_candidate_count > 0` but `primary_blocking_layer=STRATEGY_PLAN`, the next review should
+focus on StrategyPlanner no-trade behavior. If `primary_blocking_layer=RISK_ENGINE`, verify the
+dry-run flat account profile and order sizing/filters. If `primary_blocking_layer=LOCAL_STRATEGY`,
+then EMA parameters may deserve review after backtest and Shadow validation.
+
 Runtime endpoints:
 
 ```text

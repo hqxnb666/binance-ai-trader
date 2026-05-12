@@ -184,6 +184,7 @@ def dashboard_html() -> str:
         <div class="card"><h2>风控引擎 RiskEngine</h2><p>硬风控层。所有交易意图必须经过它。</p><div id="risk-summary"></div></div>
         <div class="card"><h2>订单管理 OrderManager</h2><p>唯一订单入口。dry-run/order execution off 时不会提交 Binance new_order。</p><div id="orders-summary"></div></div>
         <div class="card"><h2>Shadow Mode</h2><p>记录“如果真的下单会怎样”，并计算模拟 PnL；不下单。</p><div id="shadow-summary"></div></div>
+        <div class="card"><h2>Shadow 归因摘要</h2><p>Shadow Attribution Summary：只看候选信号卡在哪一层：本地策略、StrategyPlan、AI、RiskEngine 或 DataQuality。</p><div id="shadow-attribution-summary"></div></div>
         <div class="card"><h2>账户与仓位</h2><p>查看 Testnet 账户状态、仓位状态和真实 Testnet 前置条件。</p><div id="account-summary"></div></div>
         <div class="card"><h2>OpenAI 成本预算</h2><p>控制 StrategyPlanner、SignalReviewer、SystemAuditor 等调用成本。</p><div id="budget-summary"></div></div>
         <div class="card"><h2>系统审计 SystemAuditor</h2><p>只读审计器，不能改代码、不能改配置、不能下单。</p><div id="audit-summary"></div></div>
@@ -414,7 +415,7 @@ def dashboard_html() -> str:
 
       function render() {
         const s = api.summary.data || {};
-        renderHeader(s); renderSafety(s); renderDiagnosis(s); renderDiagnosticPreview(); renderRuntime(); renderStreams(); renderDataQuality(); renderStrategySnapshot(); renderAI(); renderRisk(); renderOrders(); renderShadow(s); renderAccount(); renderBudget(); renderAudit(s); renderLogs(); renderStrategyForm(); renderRuntimeHint(s);
+        renderHeader(s); renderSafety(s); renderDiagnosis(s); renderDiagnosticPreview(); renderRuntime(); renderStreams(); renderDataQuality(); renderStrategySnapshot(); renderAI(); renderRisk(); renderOrders(); renderShadow(s); renderShadowAttribution(s); renderAccount(); renderBudget(); renderAudit(s); renderLogs(); renderStrategyForm(); renderRuntimeHint(s);
       }
       function renderHeader(s) {
         const safety = s.safety || {};
@@ -509,6 +510,21 @@ def dashboard_html() -> str:
         const sh = s.shadow || api.shadowReport.data || {};
         document.getElementById('shadow-summary').innerHTML = [
           row('总决策数', get(sh, 'total_decisions', 0)), row('WOULD_PLACE_ORDER', get(sh, 'would_place_order_count', 0)), row('Risk 拒绝', get(sh, 'risk_rejected_count', 0)), row('AI 拒绝', get(sh, 'ai_rejected_count', 0)), row('DataQuality 阻断', get(sh, 'data_quality_blocked_count', 0)), row('模拟总 PnL', get(sh, 'simulated_total_pnl_usdt', 0)), row('模拟胜率', get(sh, 'simulated_win_rate')), '<h3>Top 5 拒绝原因</h3>', list(get(sh, 'top_rejection_reasons', []), (x) => `<div class="row"><span>${esc(get(x, 'reason'))}</span><strong>${esc(get(x, 'count'))}</strong></div>`, '暂无 Shadow 拒绝原因。')
+        ].join('');
+      }
+      function renderShadowAttribution(s) {
+        const sh = s.shadow || {};
+        const attr = get(sh, 'attribution_summary', get(s, 'shadow_attribution.summary', {})) || {};
+        document.getElementById('shadow-attribution-summary').innerHTML = [
+          row('本地候选信号', get(attr, 'local_candidate_count', 0)),
+          row('本地无信号', get(attr, 'local_no_signal_count', 0)),
+          row('StrategyPlan 阻断真实路径', get(attr, 'strategy_plan_blocked_real_order_count', 0)),
+          row('AI 人工复核', get(attr, 'ai_human_review_count', 0)),
+          row('AI 拒绝', get(attr, 'ai_rejected_count', 0)),
+          row('Risk 拒绝', get(attr, 'risk_rejected_count', 0)),
+          row('Shadow WOULD_PLACE_ORDER', get(attr, 'would_place_order_shadow_count', 0)),
+          row('真实路径 WOULD_PLACE_ORDER', get(attr, 'would_place_order_real_path_count', 0)),
+          row('主要阻断层', get(sh, 'primary_blocking_layer', get(s, 'shadow_attribution.primary_blocking_layer', 'NO_SAMPLES'))),
         ].join('');
       }
       function renderAccount() {

@@ -13,6 +13,11 @@ from sqlalchemy.orm import Session
 from config.settings import BASE_DIR, Settings
 from journal.models import ShadowDecisionRecord, ShadowEvaluationRecord
 from journal.strategy_plan_store import sanitize_json
+from shadow.attribution import (
+    build_shadow_attribution_summary,
+    primary_blocking_layer,
+    shadow_attribution_human_summary,
+)
 from shadow.schemas import (
     ShadowDecision,
     ShadowDecisionStatus,
@@ -198,6 +203,11 @@ def build_shadow_report(
             ShadowDecisionStatus.INVALIDATED.value,
         }
     )
+    attribution_summary = build_shadow_attribution_summary(
+        session,
+        window_start=start,
+        window_end=end,
+    )
     return ShadowReport(
         created_at=datetime.now(UTC),
         window_start=start,
@@ -230,6 +240,9 @@ def build_shadow_report(
         best_shadow_trade=best,
         worst_shadow_trade=worst,
         top_rejection_reasons=top_reasons,
+        attribution_summary=attribution_summary,
+        primary_blocking_layer=primary_blocking_layer(attribution_summary),
+        human_summary=shadow_attribution_human_summary(attribution_summary),
         summary=(
             f"{len(decisions)} shadow decisions, "
             f"{len(pnl_values)} evaluated would-place decisions, "

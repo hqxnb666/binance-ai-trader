@@ -81,6 +81,7 @@ def test_shadow_report_valid_sample_and_extra_forbidden() -> None:
         summary="ok",
     )
     assert report.schema_version == "shadow_report_v1"
+    assert report.primary_blocking_layer == "NO_SAMPLES"
     with pytest.raises(ValidationError):
         ShadowContextSummary(strategy_name="x", unexpected=True)
 

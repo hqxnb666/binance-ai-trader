@@ -67,6 +67,7 @@ from risk.position_sizer import PositionSizer
 from risk.risk_engine import AccountState, MarketHealth, PositionState, RiskEngine
 from runtime.daemon_state import DaemonState, RuntimeLogBuffer
 from runtime.health import RuntimeHealth
+from shadow.attribution import ShadowAttributionRecorder
 from shadow.evaluator import ShadowModeEvaluator
 from shadow.recorder import ShadowModeRecorder
 from shadow.schemas import ShadowDecisionType
@@ -110,6 +111,7 @@ class TestnetTradingDaemon:
         self.system_auditor = SystemAuditor(settings)
         self.data_quality_gate = DataQualityGate(settings)
         self.shadow_recorder = ShadowModeRecorder(settings)
+        self.shadow_attribution_recorder = ShadowAttributionRecorder(settings)
         self.shadow_evaluator = ShadowModeEvaluator(settings)
         self.strategy = EmaTrendStrategy(settings.strategy.ema_trend)
         self.poll_interval_seconds = poll_interval_seconds
@@ -615,6 +617,31 @@ class TestnetTradingDaemon:
                         "price_source": "market_snapshot",
                     },
                 )
+                self._record_shadow_attribution(
+                    session,
+                    symbol=symbol,
+                    side="HOLD",
+                    local_strategy={
+                        "has_candidate": False,
+                        "reason": "EMA Trend generated no trade candidate.",
+                    },
+                    data_quality_gate=_data_quality_attribution(dq_snapshot),
+                    strategy_plan_gate=_strategy_plan_attribution(
+                        symbol, self.active_strategy_plan
+                    ),
+                    ai_review={"decision": "NOT_RUN"},
+                    risk_engine={"approved": None},
+                    final_real_order_path={
+                        "would_submit_real_order": False,
+                        "blocked_by": "LOCAL_STRATEGY_NO_SIGNAL",
+                    },
+                    shadow_observation={
+                        "candidate_observed": False,
+                        "stage_reached": "LOCAL_SIGNAL",
+                        "primary_blocker": "LOCAL_STRATEGY",
+                        "notes": ["LOCAL_STRATEGY_NO_SIGNAL"],
+                    },
+                )
                 session.commit()
             return
         with self.session_factory() as session:
@@ -695,6 +722,32 @@ class TestnetTradingDaemon:
                         "strategy_name": signal.strategy_name,
                         "signal_type": signal.signal_type,
                         "data_quality_status": dq_snapshot.overall_status.value,
+                        "notes": dq_snapshot.reason_codes[:5],
+                    },
+                )
+                self._record_shadow_attribution(
+                    session,
+                    symbol=symbol,
+                    side=signal.side,
+                    local_strategy=_local_signal_attribution(signal),
+                    data_quality_gate=_data_quality_attribution(dq_snapshot),
+                    strategy_plan_gate=_strategy_plan_attribution(
+                        symbol, self.active_strategy_plan
+                    ),
+                    ai_review={
+                        "decision": ai_result.review.decision.value,
+                        "requires_human_review": ai_result.review.requires_human_review,
+                        "schema_valid": ai_result.schema_valid,
+                    },
+                    risk_engine={"approved": None},
+                    final_real_order_path={
+                        "would_submit_real_order": False,
+                        "blocked_by": "DATA_QUALITY_BLOCKED",
+                    },
+                    shadow_observation={
+                        "candidate_observed": True,
+                        "stage_reached": "LOCAL_SIGNAL",
+                        "primary_blocker": "DATA_QUALITY",
                         "notes": dq_snapshot.reason_codes[:5],
                     },
                 )
@@ -829,6 +882,32 @@ class TestnetTradingDaemon:
                     "risk_reason": "missing filters",
                 },
             )
+            self._record_shadow_attribution(
+                session,
+                symbol=symbol,
+                side=signal.side,
+                local_strategy=_local_signal_attribution(signal),
+                data_quality_gate=_data_quality_attribution(self.latest_data_quality_snapshot),
+                strategy_plan_gate=_strategy_plan_attribution(symbol, self.active_strategy_plan),
+                ai_review=_ai_result_attribution(ai_result),
+                risk_engine={
+                    "approved": False,
+                    "reason": "missing filters",
+                    "evaluated_with_account_profile": _account_profile_name(
+                        account_runtime_state=None
+                    ),
+                },
+                final_real_order_path={
+                    "would_submit_real_order": False,
+                    "blocked_by": "MISSING_EXCHANGE_FILTERS",
+                },
+                shadow_observation={
+                    "candidate_observed": True,
+                    "stage_reached": "RISK_REVIEW",
+                    "primary_blocker": "RISK_ENGINE",
+                    "notes": ["MISSING_EXCHANGE_FILTERS"],
+                },
+            )
             self._log("risk_rejected", level="WARNING", symbol=symbol, reason="missing filters")
             return
         runtime_kill_switch_enabled = CircuitBreaker(session).is_enabled()
@@ -887,6 +966,32 @@ class TestnetTradingDaemon:
                     "strategy_name": signal.strategy_name,
                     "signal_type": signal.signal_type,
                     "risk_reason": risk_record.reason,
+                },
+            )
+            self._record_shadow_attribution(
+                session,
+                symbol=symbol,
+                side=signal.side,
+                local_strategy=_local_signal_attribution(signal),
+                data_quality_gate=_data_quality_attribution(self.latest_data_quality_snapshot),
+                strategy_plan_gate=_strategy_plan_attribution(symbol, self.active_strategy_plan),
+                ai_review=_ai_result_attribution(ai_result),
+                risk_engine={
+                    "approved": False,
+                    "reason": risk_record.reason,
+                    "evaluated_with_account_profile": _account_profile_name(
+                        account_runtime_state
+                    ),
+                },
+                final_real_order_path={
+                    "would_submit_real_order": False,
+                    "blocked_by": "POSITION_SIZING_FAILED",
+                },
+                shadow_observation={
+                    "candidate_observed": True,
+                    "stage_reached": "RISK_REVIEW",
+                    "primary_blocker": "RISK_ENGINE",
+                    "notes": ["POSITION_SIZING_FAILED"],
                 },
             )
             self._log("risk_rejected", level="WARNING", symbol=symbol, reason=risk_record.reason)
@@ -953,6 +1058,38 @@ class TestnetTradingDaemon:
                         "risk_reason": decision.reason,
                     },
                 )
+            final_blocked_by = _final_blocked_by(
+                symbol=symbol,
+                active_strategy_plan=self.active_strategy_plan,
+                ai_result=ai_result,
+                risk_reason=decision.reason,
+            )
+            self._record_shadow_attribution(
+                session,
+                symbol=symbol,
+                side=signal.side,
+                local_strategy=_local_signal_attribution(signal),
+                data_quality_gate=_data_quality_attribution(self.latest_data_quality_snapshot),
+                strategy_plan_gate=_strategy_plan_attribution(symbol, self.active_strategy_plan),
+                ai_review=_ai_result_attribution(ai_result),
+                risk_engine={
+                    "approved": False,
+                    "reason": decision.reason,
+                    "evaluated_with_account_profile": _account_profile_name(
+                        account_runtime_state
+                    ),
+                },
+                final_real_order_path={
+                    "would_submit_real_order": False,
+                    "blocked_by": final_blocked_by,
+                },
+                shadow_observation={
+                    "candidate_observed": True,
+                    "stage_reached": "RISK_REVIEW",
+                    "primary_blocker": _primary_blocker_for_final(final_blocked_by),
+                    "notes": [decision.reason],
+                },
+            )
             return
         order_quality = self.data_quality_gate.evaluate_order_preconditions(
             symbol=symbol,
@@ -1004,6 +1141,32 @@ class TestnetTradingDaemon:
                     "strategy_name": signal.strategy_name,
                     "signal_type": signal.signal_type,
                     "data_quality_status": order_quality.overall_status.value,
+                    "notes": order_quality.reason_codes[:5],
+                },
+            )
+            self._record_shadow_attribution(
+                session,
+                symbol=symbol,
+                side=signal.side,
+                local_strategy=_local_signal_attribution(signal),
+                data_quality_gate=_data_quality_attribution(order_quality),
+                strategy_plan_gate=_strategy_plan_attribution(symbol, self.active_strategy_plan),
+                ai_review=_ai_result_attribution(ai_result),
+                risk_engine={
+                    "approved": True,
+                    "reason": decision.reason,
+                    "evaluated_with_account_profile": _account_profile_name(
+                        account_runtime_state
+                    ),
+                },
+                final_real_order_path={
+                    "would_submit_real_order": False,
+                    "blocked_by": "DATA_QUALITY_BLOCKED",
+                },
+                shadow_observation={
+                    "candidate_observed": True,
+                    "stage_reached": "RISK_REVIEW",
+                    "primary_blocker": "DATA_QUALITY",
                     "notes": order_quality.reason_codes[:5],
                 },
             )
@@ -1059,6 +1222,59 @@ class TestnetTradingDaemon:
                     "ai_decision": ai_result.review.decision.value,
                     "risk_reason": risk_record.reason,
                     "price_source": "sized_order",
+                },
+            )
+            self._record_shadow_attribution(
+                session,
+                symbol=symbol,
+                side=signal.side,
+                local_strategy=_local_signal_attribution(signal),
+                data_quality_gate=_data_quality_attribution(order_quality),
+                strategy_plan_gate=_strategy_plan_attribution(symbol, self.active_strategy_plan),
+                ai_review=_ai_result_attribution(ai_result),
+                risk_engine={
+                    "approved": True,
+                    "reason": decision.reason,
+                    "evaluated_with_account_profile": _account_profile_name(
+                        account_runtime_state
+                    ),
+                },
+                final_real_order_path={
+                    "would_submit_real_order": False,
+                    "blocked_by": "WOULD_PLACE_ORDER_SHADOW_ONLY",
+                },
+                shadow_observation={
+                    "candidate_observed": True,
+                    "stage_reached": "WOULD_PLACE_ORDER",
+                    "primary_blocker": "NONE",
+                    "notes": ["WOULD_PLACE_ORDER_SHADOW_ONLY"],
+                },
+            )
+        else:
+            self._record_shadow_attribution(
+                session,
+                symbol=symbol,
+                side=signal.side,
+                local_strategy=_local_signal_attribution(signal),
+                data_quality_gate=_data_quality_attribution(order_quality),
+                strategy_plan_gate=_strategy_plan_attribution(symbol, self.active_strategy_plan),
+                ai_review=_ai_result_attribution(ai_result),
+                risk_engine={
+                    "approved": True,
+                    "reason": decision.reason,
+                    "evaluated_with_account_profile": _account_profile_name(
+                        account_runtime_state
+                    ),
+                },
+                final_real_order_path={
+                    "would_submit_real_order": True,
+                    "blocked_by": "WOULD_PLACE_ORDER_REAL_PATH",
+                },
+                shadow_observation={
+                    "candidate_observed": True,
+                    "stage_reached": "WOULD_PLACE_ORDER",
+                    "primary_blocker": "NONE",
+                    "notes": ["WOULD_PLACE_ORDER_REAL_PATH"],
                 },
             )
 
@@ -1268,6 +1484,43 @@ class TestnetTradingDaemon:
         except Exception as exc:  # noqa: BLE001 - shadow mode must not alter trading path
             self._log("shadow_record_failed", level="WARNING", symbol=symbol, error=str(exc))
 
+    def _record_shadow_attribution(
+        self,
+        session: Session,
+        *,
+        symbol: str,
+        side: str,
+        local_strategy: dict[str, Any],
+        data_quality_gate: dict[str, Any],
+        strategy_plan_gate: dict[str, Any],
+        ai_review: dict[str, Any],
+        risk_engine: dict[str, Any],
+        final_real_order_path: dict[str, Any],
+        shadow_observation: dict[str, Any],
+    ) -> None:
+        try:
+            record = self.shadow_attribution_recorder.record(
+                session,
+                symbol=symbol,
+                side=side,
+                local_strategy=local_strategy,
+                data_quality_gate=data_quality_gate,
+                strategy_plan_gate=strategy_plan_gate,
+                ai_review=ai_review,
+                risk_engine=risk_engine,
+                final_real_order_path=final_real_order_path,
+                shadow_observation=shadow_observation,
+            )
+            if record is not None:
+                self._log(
+                    "shadow_attribution_recorded",
+                    symbol=symbol,
+                    primary_blocker=record.primary_blocker,
+                    final_blocked_by=record.final_blocked_by,
+                )
+        except Exception as exc:  # noqa: BLE001 - attribution must not alter trading path
+            self._log("shadow_attribution_failed", level="WARNING", symbol=symbol, error=str(exc))
+
     def _log(self, event: str, *, level: str = "INFO", **payload: Any) -> None:
         self.logs.append(event, level=level, **payload)
         log_fn: Callable[..., None] = logger.warning if level == "WARNING" else logger.info
@@ -1356,6 +1609,8 @@ class TestnetTradingDaemon:
                     else None,
                     "simulated_total_pnl_usdt": report.simulated_total_pnl_usdt,
                     "simulated_win_rate": report.simulated_win_rate,
+                    "primary_blocking_layer": report.primary_blocking_layer,
+                    "attribution_summary": report.attribution_summary,
                     "latest_report_created_at": report.created_at.isoformat(),
                 }
         except Exception as exc:  # noqa: BLE001 - health should stay available
@@ -1368,6 +1623,8 @@ class TestnetTradingDaemon:
                 else None,
                 "simulated_total_pnl_usdt": "0",
                 "simulated_win_rate": None,
+                "primary_blocking_layer": "NO_SAMPLES",
+                "attribution_summary": {},
                 "latest_report_created_at": None,
                 "warning": type(exc).__name__,
             }
@@ -1385,6 +1642,8 @@ class TestnetTradingDaemon:
             "top_rejection_reasons": [
                 item.model_dump(mode="json") for item in report.top_rejection_reasons
             ],
+            "attribution_summary": report.attribution_summary,
+            "primary_blocking_layer": report.primary_blocking_layer,
         }
 
     def _evaluate_data_quality_runtime(
@@ -1767,6 +2026,120 @@ def _decimal_or_default(value: object, default: Decimal) -> Decimal:
         return Decimal(str(value))
     except Exception:  # noqa: BLE001
         return default
+
+
+def _local_signal_attribution(signal: Any) -> dict[str, Any]:
+    return {
+        "has_candidate": True,
+        "side": getattr(signal, "side", "HOLD"),
+        "confidence": getattr(signal, "confidence", None),
+        "reason": getattr(signal, "reason", ""),
+    }
+
+
+def _data_quality_attribution(snapshot: DataQualitySnapshot | None) -> dict[str, Any]:
+    if snapshot is None:
+        return {
+            "status": "UNKNOWN",
+            "safe_for_signal_review": False,
+            "safe_for_order": False,
+            "blocking_reasons": ["NO_DATA_QUALITY_SNAPSHOT"],
+        }
+    return {
+        "status": snapshot.overall_status.value,
+        "safe_for_signal_review": snapshot.safe_for_signal_review,
+        "safe_for_order": snapshot.safe_for_order,
+        "blocking_reasons": snapshot.reason_codes,
+    }
+
+
+def _strategy_plan_attribution(
+    symbol: str,
+    active_strategy_plan: dict[str, Any] | None,
+) -> dict[str, Any]:
+    plan = active_strategy_plan or {}
+    permissions = plan.get("symbol_permissions")
+    permission = None
+    if isinstance(permissions, dict):
+        permission = permissions.get(symbol.upper())
+    risk_mode = plan.get("risk_mode")
+    trade_bias = plan.get("trade_bias")
+    requires_human_review = bool(plan.get("requires_human_review"))
+    allowed_actions = plan.get("allowed_actions") or []
+    blocks_real_order = (
+        risk_mode == "no_trade"
+        or trade_bias == "no_trade"
+        or requires_human_review
+        or permission in {"observe_only", "blocked"}
+    )
+    return {
+        "active_plan_id": plan.get("id"),
+        "risk_mode": risk_mode,
+        "trade_bias": trade_bias,
+        "requires_human_review": requires_human_review,
+        "allowed_actions": allowed_actions,
+        "symbol_permission": permission,
+        "blocks_real_order": blocks_real_order,
+        "blocks_shadow_evaluation": False,
+    }
+
+
+def _ai_result_attribution(ai_result: SignalReviewResult) -> dict[str, Any]:
+    return {
+        "decision": ai_result.review.decision.value,
+        "requires_human_review": ai_result.review.requires_human_review,
+        "schema_valid": ai_result.schema_valid,
+    }
+
+
+def _account_profile_name(account_runtime_state: RuntimeAccountState | None) -> str:
+    if account_runtime_state is None:
+        return "unknown"
+    return str(account_runtime_state.source)
+
+
+def _final_blocked_by(
+    *,
+    symbol: str,
+    active_strategy_plan: dict[str, Any] | None,
+    ai_result: SignalReviewResult,
+    risk_reason: str,
+) -> str:
+    plan_gate = _strategy_plan_attribution(symbol, active_strategy_plan)
+    if plan_gate["blocks_real_order"]:
+        if plan_gate["risk_mode"] == "no_trade" or plan_gate["trade_bias"] == "no_trade":
+            return "STRATEGY_PLAN_BLOCKED_REAL_ORDER"
+        if plan_gate["symbol_permission"] == "observe_only":
+            return "STRATEGY_PLAN_OBSERVE_ONLY"
+        return "STRATEGY_PLAN_BLOCKED_REAL_ORDER"
+    if not ai_result.approved_for_risk:
+        decision = ai_result.review.decision.value
+        if "HUMAN_REVIEW" in decision:
+            return "AI_HUMAN_REVIEW"
+        if "REJECT" in decision:
+            return "AI_REJECTED"
+        if ai_result.reason == "BUDGET_GUARD_BLOCKED":
+            return "BUDGET_BLOCKED"
+    reason = str(risk_reason).lower()
+    if "symbol position limit" in reason:
+        return "RISK_SYMBOL_POSITION_LIMIT"
+    if "total position limit" in reason:
+        return "RISK_TOTAL_POSITION_LIMIT"
+    return "RISK_REJECTED"
+
+
+def _primary_blocker_for_final(final_blocked_by: str) -> str:
+    if final_blocked_by.startswith("STRATEGY_PLAN"):
+        return "STRATEGY_PLAN"
+    if final_blocked_by.startswith("AI_") or final_blocked_by == "BUDGET_BLOCKED":
+        return "AI_REVIEW"
+    if final_blocked_by.startswith("RISK_"):
+        return "RISK_ENGINE"
+    if final_blocked_by.startswith("DATA_QUALITY"):
+        return "DATA_QUALITY"
+    if final_blocked_by == "LOCAL_STRATEGY_NO_SIGNAL":
+        return "LOCAL_STRATEGY"
+    return "UNKNOWN"
 
 
 def _severity_at_least(value: str, threshold: str) -> bool:

@@ -30,6 +30,7 @@ def test_dashboard_page_returns_simplified_console_html() -> None:
     assert "安全总览" in html
     assert "当前结论" in html
     assert "Shadow Mode" in html
+    assert "Shadow Attribution Summary" in html
     assert "运行状态 Runtime" in html
     assert "行情与网络 Streams" in html
     assert "数据质量闸门 DataQualityGate" in html
@@ -79,6 +80,7 @@ def test_dashboard_summary_api_is_read_only_and_compact() -> None:
         "safety",
         "diagnosis",
         "shadow",
+        "shadow_attribution",
         "strategy_plan",
         "signals",
         "ai_reviews",
@@ -167,10 +169,14 @@ def test_strategy_plan_and_diagnostic_snapshot_apis_are_read_only() -> None:
             "recent_signals",
             "shadow_report",
             "shadow_recent",
+            "shadow_attribution_recent",
+            "shadow_attribution_summary",
             "blocking_attribution",
             "audit_latest",
         ]:
             assert key in payload
+        assert "summary" in payload["shadow_attribution_summary"]
+        assert "primary_blocking_layer" in payload["shadow_attribution_summary"]
         assert "profile" in payload["account_profile"]
         assert "API_KEY" not in str(payload)
         assert "sk-" not in str(payload)

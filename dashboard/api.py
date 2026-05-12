@@ -51,6 +51,13 @@ from journal.strategy_plan_store import (
 from risk.circuit_breaker import CircuitBreaker
 from runtime.task_manager import RuntimeTaskManager
 from scripts.verify_testnet_order_readiness import build_readiness_report
+from shadow.attribution import (
+    build_shadow_attribution_summary,
+    list_recent_shadow_attributions,
+    primary_blocking_layer,
+    shadow_attribution_human_summary,
+    shadow_attribution_to_dict,
+)
 
 router = APIRouter()
 
@@ -506,6 +513,19 @@ def runtime_diagnostic_snapshot(
     shadow_open_payload = _safe_section(
         "shadow_open", lambda: manager.shadow_open(shadow_limit), errors
     )
+    shadow_attribution_recent_payload = _safe_section(
+        "shadow_attribution_recent",
+        lambda: [
+            shadow_attribution_to_dict(record)
+            for record in list_recent_shadow_attributions(session, limit=shadow_limit)
+        ],
+        errors,
+    )
+    shadow_attribution_summary_payload = _safe_section(
+        "shadow_attribution_summary",
+        lambda: _shadow_attribution_payload(session),
+        errors,
+    )
     readiness_payload = _safe_section(
         "readiness_latest",
         lambda: getattr(request.app.state, "latest_readiness_report", None)
@@ -559,6 +579,8 @@ def runtime_diagnostic_snapshot(
         "shadow_report": shadow_report_payload,
         "shadow_recent": shadow_recent_payload,
         "shadow_open": shadow_open_payload,
+        "shadow_attribution_recent": shadow_attribution_recent_payload,
+        "shadow_attribution_summary": shadow_attribution_summary_payload,
         "readiness_latest": readiness_payload,
         "openai_usage_1d": openai_usage_payload,
         "audit_latest": audit_payload,
@@ -582,6 +604,9 @@ def runtime_diagnostic_snapshot(
                 else 0,
                 "shadow_open": len(shadow_open_payload)
                 if isinstance(shadow_open_payload, list)
+                else 0,
+                "shadow_attribution_recent": len(shadow_attribution_recent_payload)
+                if isinstance(shadow_attribution_recent_payload, list)
                 else 0,
                 "last_ai_reviews": len(ai_reviews_payload)
                 if isinstance(ai_reviews_payload, list)
@@ -904,6 +929,15 @@ def _openai_usage_payload(*, session: Session, settings: Settings, days: int) ->
     }
 
 
+def _shadow_attribution_payload(session: Session) -> dict[str, object]:
+    summary = build_shadow_attribution_summary(session, hours=24)
+    return {
+        "summary": summary,
+        "primary_blocking_layer": primary_blocking_layer(summary),
+        "human_summary": shadow_attribution_human_summary(summary),
+    }
+
+
 def _blocking_attribution(
     *,
     shadow_recent: list[dict[str, object]],
@@ -1068,6 +1102,7 @@ def _dashboard_summary_from_snapshot(snapshot: dict[str, Any]) -> dict[str, obje
     risk_config = _dict_or_empty(snapshot.get("risk_config")).get("config", {})
     strategy_config = _dict_or_empty(snapshot.get("strategy_config")).get("config", {})
     blocking = _dict_or_empty(snapshot.get("blocking_attribution"))
+    shadow_attribution = _dict_or_empty(snapshot.get("shadow_attribution_summary"))
 
     plan_status_counts = _count_values(recent_plans, "status")
     plan_reason_text = " ".join(
@@ -1149,7 +1184,14 @@ def _dashboard_summary_from_snapshot(snapshot: dict[str, Any]) -> dict[str, obje
                 "top_rejection_reasons": (
                     shadow_report.get("top_rejection_reasons", []) or []
                 )[:5],
+                "attribution_summary": shadow_report.get("attribution_summary")
+                or shadow_attribution.get("summary", {}),
+                "primary_blocking_layer": shadow_report.get("primary_blocking_layer")
+                or shadow_attribution.get("primary_blocking_layer"),
+                "human_summary": shadow_report.get("human_summary")
+                or shadow_attribution.get("human_summary", []),
             },
+            "shadow_attribution": shadow_attribution,
             "strategy_plan": {
                 "active_status": active_plan_payload.get("status", "UNKNOWN"),
                 "risk_mode": active_plan.get("risk_mode"),

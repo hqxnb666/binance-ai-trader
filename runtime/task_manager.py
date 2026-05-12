@@ -235,5 +235,7 @@ class RuntimeTaskManager:
             "last_shadow_evaluation_at": None,
             "simulated_total_pnl_usdt": "0",
             "simulated_win_rate": None,
+            "primary_blocking_layer": "NO_SAMPLES",
+            "attribution_summary": {},
             "latest_report_created_at": None,
         }

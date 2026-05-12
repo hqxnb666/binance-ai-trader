@@ -305,6 +305,49 @@ class ShadowDecisionRecord(Base):
     order_execution_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class ShadowAttributionRecord(Base):
+    __tablename__ = "shadow_attribution_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    side: Mapped[str] = mapped_column(String(10), default="HOLD")
+    local_has_candidate: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    local_confidence: Mapped[float | None] = mapped_column(Numeric(6, 5), nullable=True)
+    local_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    data_quality_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    data_quality_safe_for_signal_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    data_quality_safe_for_order: Mapped[bool] = mapped_column(Boolean, default=False)
+    data_quality_blocking_reasons_json: Mapped[list[str]] = mapped_column(JSON)
+    active_strategy_plan_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    strategy_plan_risk_mode: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    strategy_plan_trade_bias: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    strategy_plan_requires_human_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    strategy_plan_allowed_actions_json: Mapped[list[str]] = mapped_column(JSON)
+    strategy_plan_symbol_permission: Mapped[str | None] = mapped_column(
+        String(30), nullable=True
+    )
+    strategy_plan_blocks_real_order: Mapped[bool] = mapped_column(Boolean, default=False)
+    strategy_plan_blocks_shadow_evaluation: Mapped[bool] = mapped_column(
+        Boolean, default=False
+    )
+    ai_decision: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    ai_requires_human_review: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    ai_schema_valid: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    risk_approved: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    risk_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evaluated_with_account_profile: Mapped[str | None] = mapped_column(
+        String(50), nullable=True
+    )
+    would_submit_real_order: Mapped[bool] = mapped_column(Boolean, default=False)
+    final_blocked_by: Mapped[str] = mapped_column(String(80), index=True)
+    candidate_observed: Mapped[bool] = mapped_column(Boolean, default=False)
+    stage_reached: Mapped[str] = mapped_column(String(50), index=True)
+    primary_blocker: Mapped[str] = mapped_column(String(50), index=True)
+    notes_json: Mapped[list[str]] = mapped_column(JSON)
+    raw_context_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+
+
 class ShadowEvaluationRecord(Base):
     __tablename__ = "shadow_evaluation_records"
 
