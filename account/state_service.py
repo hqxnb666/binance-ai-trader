@@ -27,16 +27,22 @@ class AccountPositionService:
         broker: Broker,
         dry_run: bool,
         order_execution_enabled: bool,
+        allow_dry_run_flat_profile: bool = True,
     ):
         self.settings = settings
         self.broker = broker
         self.dry_run = dry_run
         self.order_execution_enabled = order_execution_enabled
+        self.allow_dry_run_flat_profile = allow_dry_run_flat_profile
         self.latest_account_state: RuntimeAccountState | None = None
         self.latest_position_states: dict[str, RuntimePositionState] = {}
         self.latest_snapshot: AccountPositionSnapshot | None = None
 
     async def refresh_account_state(self) -> RuntimeAccountState:
+        if self._use_dry_run_flat_profile():
+            account = self._dry_run_flat_account()
+            self.latest_account_state = account
+            return account
         if (
             not self.settings.binance_testnet_api_key
             or not self.settings.binance_testnet_api_secret
@@ -97,17 +103,21 @@ class AccountPositionService:
         return snapshot
 
     def simulated_snapshot(self, symbols: list[str]) -> AccountPositionSnapshot:
-        account = self._simulated_account("simulated_default")
+        account = (
+            self._dry_run_flat_account()
+            if self._use_dry_run_flat_profile()
+            else self._simulated_account("simulated_default")
+        )
         positions = [
             self._position_from_account(account, symbol, Decimal("0")) for symbol in symbols
         ]
         snapshot = AccountPositionSnapshot(
             created_at=datetime.now(UTC),
-            source="simulated_default",
+            source=account.source,
             account=account,
             positions=positions,
             safe_for_real_order=False,
-            reason_codes=["ACCOUNT_SIMULATED_DEFAULT", "POSITION_SIMULATED_DEFAULT"],
+            reason_codes=_snapshot_reason_codes(account, positions),
         )
         self.latest_account_state = account
         self.latest_position_states = {position.symbol: position for position in positions}
@@ -151,9 +161,17 @@ class AccountPositionService:
         quantity = _decimal(balance.total)
         available = _decimal(balance.free)
         locked = _decimal(balance.locked)
-        if account.status in {AccountSyncStatus.SIMULATED_DEFAULT, AccountSyncStatus.UNKNOWN}:
+        if account.source == "dry_run_flat_profile":
             status = PositionSyncStatus.SIMULATED_DEFAULT
-            source = "simulated_default"
+            source = "dry_run_flat_profile"
+            safe = False
+            value = Decimal("0")
+            quantity = Decimal("0")
+            available = Decimal("0")
+            locked = Decimal("0")
+        elif account.status in {AccountSyncStatus.SIMULATED_DEFAULT, AccountSyncStatus.UNKNOWN}:
+            status = PositionSyncStatus.SIMULATED_DEFAULT
+            source = account.source if account.source == "simulated_default" else "unknown"
             safe = False
             value: Decimal | str = "unknown"
         elif account.status != AccountSyncStatus.OK:
@@ -224,6 +242,42 @@ class AccountPositionService:
             is_safe_for_real_order=False,
         )
 
+    def _dry_run_flat_account(self) -> RuntimeAccountState:
+        equity = Decimal(str(self.settings.dry_run_equity_usdt))
+        available = Decimal(str(self.settings.dry_run_available_usdt))
+        return RuntimeAccountState(
+            created_at=datetime.now(UTC),
+            status=AccountSyncStatus.SIMULATED_DEFAULT,
+            source="dry_run_flat_profile",
+            equity_usdt=equity,
+            available_usdt=available,
+            balances=[
+                AccountBalanceSnapshot(
+                    asset="USDT",
+                    free=available,
+                    locked=0,
+                    total=available,
+                ),
+                AccountBalanceSnapshot(asset="BTC", free=0, locked=0, total=0),
+                AccountBalanceSnapshot(asset="ETH", free=0, locked=0, total=0),
+            ],
+            daily_realized_pnl="unknown",
+            daily_unrealized_pnl="unknown",
+            daily_loss_pct=0,
+            consecutive_losses=0,
+            total_position_pct=0,
+            error_message="dry_run_flat_profile",
+            is_safe_for_real_order=False,
+        )
+
+    def _use_dry_run_flat_profile(self) -> bool:
+        return (
+            self.allow_dry_run_flat_profile
+            and self.settings.dry_run_account_profile == "flat"
+            and self.dry_run
+            and not self.order_execution_enabled
+        )
+
     def _error_account(self, exc: Exception) -> RuntimeAccountState:
         return RuntimeAccountState(
             created_at=datetime.now(UTC),
@@ -272,9 +326,13 @@ def _snapshot_reason_codes(
     account: RuntimeAccountState, positions: list[RuntimePositionState]
 ) -> list[str]:
     codes: list[str] = []
+    if account.source == "dry_run_flat_profile":
+        codes.append("DRY_RUN_FLAT_PROFILE")
     if account.status != AccountSyncStatus.OK:
         codes.append(f"ACCOUNT_{account.status.value}")
     for position in positions:
+        if position.source == "dry_run_flat_profile":
+            codes.append(f"POSITION_{position.symbol}_DRY_RUN_FLAT_PROFILE")
         if position.status != PositionSyncStatus.OK:
             codes.append(f"POSITION_{position.symbol}_{position.status.value}")
     return codes
@@ -283,6 +341,8 @@ def _snapshot_reason_codes(
 def _account_with_position_totals(
     account: RuntimeAccountState, positions: list[RuntimePositionState]
 ) -> RuntimeAccountState:
+    if account.source == "dry_run_flat_profile":
+        return account.model_copy(update={"total_position_pct": 0})
     usdt = _decimal(account.available_usdt)
     position_value = sum(
         (_decimal(position.estimated_value_usdt) for position in positions),

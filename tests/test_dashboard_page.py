@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 
 import dashboard.api as dashboard_api
 from app.main import app
+from config.settings import load_settings
+from dashboard.api import _account_profile_payload, _diagnostic_summary
 from dashboard.web import dashboard_html
 
 
@@ -156,6 +158,7 @@ def test_strategy_plan_and_diagnostic_snapshot_apis_are_read_only() -> None:
         assert payload["schema_version"] == "diagnostic_snapshot_v1"
         for key in [
             "runtime_health",
+            "account_profile",
             "strategy_config",
             "risk_config",
             "active_strategy_plan",
@@ -168,8 +171,61 @@ def test_strategy_plan_and_diagnostic_snapshot_apis_are_read_only() -> None:
             "audit_latest",
         ]:
             assert key in payload
+        assert "profile" in payload["account_profile"]
         assert "API_KEY" not in str(payload)
         assert "sk-" not in str(payload)
+
+
+def test_diagnostic_snapshot_notes_account_profile_pollution() -> None:
+    settings = load_settings()
+    account_profile = _account_profile_payload(
+        settings=settings,
+        runtime_health={
+            "dry_run": True,
+            "order_execution_enabled": False,
+            "account_position_status": {
+                "account_profile": "binance_rest",
+                "account_source": "binance_rest",
+                "positions": [
+                    {
+                        "symbol": "BTCUSDT",
+                        "position_pct": settings.risk_config.max_position_pct_per_symbol + 1,
+                    }
+                ],
+            },
+        },
+    )
+    summary = _diagnostic_summary(
+        active_strategy_plan={"status": "NO_ACTIVE_STRATEGY_PLAN", "plan": None},
+        account_profile=account_profile,
+        data_quality={},
+        readiness={},
+        blocking_attribution={"would_place_order": 0},
+        errors=[],
+        counts={},
+    )
+    assert account_profile["shadow_position_polluted"] is True
+    assert "TESTNET_POSITION_POLLUTION" in summary["primary_blockers"]
+    assert any("Shadow results may be dominated" in note for note in summary["notes"])
+
+
+def test_diagnostic_snapshot_notes_flat_account_profile() -> None:
+    settings = load_settings().model_copy(update={"dry_run_account_profile": "flat"})
+    account_profile = _account_profile_payload(
+        settings=settings,
+        runtime_health={
+            "dry_run": True,
+            "order_execution_enabled": False,
+            "account_position_status": {
+                "account_profile": "flat",
+                "account_source": "dry_run_flat_profile",
+                "positions": [],
+            },
+        },
+    )
+    assert account_profile["profile"] == "flat"
+    assert account_profile["shadow_position_polluted"] is False
+    assert any("simulated flat account" in note for note in account_profile["notes"])
 
 
 def test_dashboard_does_not_add_real_order_routes() -> None:

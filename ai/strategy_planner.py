@@ -228,6 +228,6 @@ def budget_blocked_strategy_output(
 
 def _safe_strategy_explanation(value: str) -> str:
     safe = value
-    for field_name in FORBIDDEN_ORDER_FIELDS:
+    for field_name in sorted(FORBIDDEN_ORDER_FIELDS, key=len, reverse=True):
         safe = safe.replace(field_name, "[REDACTED_ORDER_FIELD]")
     return safe[:1000]

@@ -42,7 +42,24 @@ Task rules:
 - blocked_actions must always include MARTINGALE, LEVERAGE, and SHORT.
 - For symbol_permissions, output an array of objects with symbol, permission, and reason.
   Do not output symbol_permissions as a dynamic JSON object keyed by symbol.
-- Do not include direct order field names, order ids, broker method names, execution sizes, or
-  execution levels anywhere in the JSON.
+- Only output fields from the selected schema. Do not add extra fields.
+- StrategyPlan fields are exactly:
+  schema_version, plan_action, planning_mode, symbol_scope, market_regime, trade_bias,
+  allowed_actions, blocked_actions, risk_mode, max_position_pct, symbol_permissions,
+  entry_quality_required, invalidation_conditions, expires_at, confidence,
+  requires_human_review, reason_codes, explanation.
+- StrategyPlanUpdate fields are exactly:
+  schema_version, plan_action, planning_mode, previous_plan_id,
+  is_previous_plan_still_valid, changes, new_expiration_time, confidence,
+  requires_human_review, reason_codes, explanation.
+- StrategyPlanChange fields are exactly:
+  field, old_value, new_value, reason.
+- SymbolPermissionRule fields are exactly:
+  symbol, permission, reason.
+- Do not include any order or execution fields, including:
+  order, order_type, order_side, quantity, price, stop_price, take_profit, stop_loss,
+  client_order_id, place_order, execute_order, broker, new_order, order_id.
+- Do not include order ids, broker method names, execution sizes, execution prices, stop levels,
+  take-profit levels, or client order identifiers anywhere in the JSON.
 - Output JSON only. Do not output Markdown.
 - Output must conform to StrategyPlan or StrategyPlanUpdate schema.

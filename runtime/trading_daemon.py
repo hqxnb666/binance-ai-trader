@@ -1319,6 +1319,7 @@ class TestnetTradingDaemon:
                 position.symbol: position for position in snapshot.positions
             }
         return {
+            "account_profile": self.settings.dry_run_account_profile,
             "account_status": snapshot.account.status.value,
             "account_source": snapshot.account.source,
             "equity_usdt": str(snapshot.account.equity_usdt),
@@ -1601,6 +1602,12 @@ class TestnetTradingDaemon:
             "market_stream_connected": self._market_connected_for_runtime(),
             "user_stream_connected": self._user_connected(),
             "data_delay_seconds": self._data_delay_seconds(),
+            "last_kline_time": self.last_kline_time.isoformat()
+            if self.last_kline_time
+            else None,
+            "last_user_event_time": self.last_user_event_time.isoformat()
+            if self.last_user_event_time
+            else None,
             "last_error": self.last_error,
             "reconnecting": self.market_stream.health.reconnecting
             or bool(self.user_stream and self.user_stream.health.reconnecting),

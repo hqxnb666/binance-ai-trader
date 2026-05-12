@@ -115,6 +115,7 @@ async def run_lifecycle(
             broker=broker,
             dry_run=settings.trading_dry_run,
             order_execution_enabled=settings.order_execution_enabled,
+            allow_dry_run_flat_profile=False,
         )
         account_position = await service.refresh_all([symbol], {symbol.upper(): latest_price})
         with SessionLocal() as session:

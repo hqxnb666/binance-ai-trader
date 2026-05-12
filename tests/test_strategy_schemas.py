@@ -78,3 +78,20 @@ def test_blocked_actions_are_required() -> None:
 def test_order_fields_are_forbidden() -> None:
     with pytest.raises(ValueError):
         _valid_plan(explanation="please place_order with quantity and price")
+
+
+def test_extra_order_field_is_forbidden() -> None:
+    with pytest.raises(ValueError):
+        _valid_plan(order_type="LIMIT")
+
+
+def test_safe_normalization_does_not_expand_permissions() -> None:
+    plan = _valid_plan(
+        allowed_actions=["hold_only"],
+        symbol_permissions=[
+            {"symbol": "BTCUSDT", "permission": "observe", "reason": "watch"},
+            {"symbol": "ETHUSDT", "permission": "observe_only", "reason": "watch"},
+        ],
+    )
+    assert plan.allowed_actions == ["HOLD"]
+    assert plan.symbol_permissions[0].permission == "observe_only"

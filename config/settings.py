@@ -147,6 +147,9 @@ class Settings(BaseModel):
     live_trading_enabled: bool = False
     trading_dry_run: bool = True
     order_execution_enabled: bool = False
+    dry_run_account_profile: Literal["binance_rest", "flat"] = "binance_rest"
+    dry_run_equity_usdt: float = 100000.0
+    dry_run_available_usdt: float = 100000.0
 
     binance_testnet_api_key: SecretStr | None = None
     binance_testnet_api_secret: SecretStr | None = None
@@ -255,6 +258,9 @@ class Settings(BaseModel):
             "live_trading_enabled": self.live_trading_enabled,
             "trading_dry_run": self.trading_dry_run,
             "order_execution_enabled": self.order_execution_enabled,
+            "dry_run_account_profile": self.dry_run_account_profile,
+            "dry_run_equity_usdt": self.dry_run_equity_usdt,
+            "dry_run_available_usdt": self.dry_run_available_usdt,
             "database_url": self.database_url,
             "binance": {
                 "testnet_rest_base": self.binance_spot_testnet_rest_base,
@@ -372,6 +378,9 @@ def load_settings(base_dir: Path = BASE_DIR) -> Settings:
         live_trading_enabled=_env_bool("LIVE_TRADING_ENABLED", False),
         trading_dry_run=_env_bool("TRADING_DRY_RUN", True),
         order_execution_enabled=_env_bool("ORDER_EXECUTION_ENABLED", False),
+        dry_run_account_profile=_env_str("DRY_RUN_ACCOUNT_PROFILE", "binance_rest").lower(),
+        dry_run_equity_usdt=_env_float("DRY_RUN_EQUITY_USDT", 100000.0),
+        dry_run_available_usdt=_env_float("DRY_RUN_AVAILABLE_USDT", 100000.0),
         binance_testnet_api_key=_env_secret("BINANCE_TESTNET_API_KEY"),
         binance_testnet_api_secret=_env_secret("BINANCE_TESTNET_API_SECRET"),
         binance_live_api_key=_env_secret("BINANCE_LIVE_API_KEY"),

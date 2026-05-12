@@ -44,7 +44,14 @@ class RuntimeAccountState(BaseModel):
     schema_version: Literal["runtime_account_state_v1"] = "runtime_account_state_v1"
     created_at: datetime
     status: AccountSyncStatus
-    source: Literal["binance_rest", "user_stream", "journal", "simulated_default", "unknown"]
+    source: Literal[
+        "binance_rest",
+        "user_stream",
+        "journal",
+        "simulated_default",
+        "dry_run_flat_profile",
+        "unknown",
+    ]
     equity_usdt: Decimal | str
     available_usdt: Decimal | str
     balances: list[AccountBalanceSnapshot] = Field(default_factory=list)
@@ -64,7 +71,14 @@ class RuntimePositionState(BaseModel):
     created_at: datetime
     symbol: str
     status: PositionSyncStatus
-    source: Literal["binance_rest", "user_stream", "journal", "simulated_default", "unknown"]
+    source: Literal[
+        "binance_rest",
+        "user_stream",
+        "journal",
+        "simulated_default",
+        "dry_run_flat_profile",
+        "unknown",
+    ]
     base_asset: str
     quote_asset: str
     quantity: Decimal | str
@@ -90,7 +104,14 @@ class AccountPositionSnapshot(BaseModel):
 
     schema_version: Literal["account_position_snapshot_v1"] = "account_position_snapshot_v1"
     created_at: datetime
-    source: Literal["binance_rest", "user_stream", "journal", "simulated_default", "unknown"]
+    source: Literal[
+        "binance_rest",
+        "user_stream",
+        "journal",
+        "simulated_default",
+        "dry_run_flat_profile",
+        "unknown",
+    ]
     account: RuntimeAccountState
     positions: list[RuntimePositionState]
     safe_for_real_order: bool

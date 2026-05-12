@@ -359,6 +359,30 @@ Dry-run can read market data, calculate indicators, generate strategy signals, c
 OpenAI key is configured, run RiskEngine, and create virtual `OrderRecord` rows. It does not call
 Binance `new_order`. Dry-run order statuses are `DRY_RUN_APPROVED` and `DRY_RUN_REJECTED`.
 
+Dry-run account profile defaults to the real Binance Spot Testnet account snapshot:
+
+```text
+DRY_RUN_ACCOUNT_PROFILE=binance_rest
+```
+
+This is closest to real Testnet observation, but existing Testnet BTC/ETH balances can dominate
+RiskEngine position-limit decisions. If your Testnet account already has large BTC/ETH inventory and
+you want to observe whether the strategy would pass in a clean flat account, use:
+
+```text
+DRY_RUN_ACCOUNT_PROFILE=flat
+DRY_RUN_EQUITY_USDT=100000
+DRY_RUN_AVAILABLE_USDT=100000
+```
+
+The `flat` profile only applies when `TRADING_DRY_RUN=true` and
+`ORDER_EXECUTION_ENABLED=false`. It labels account and position state as
+`source=dry_run_flat_profile`, sets BTCUSDT/ETHUSDT positions to `FLAT`, and is only for dry-run /
+Shadow Mode diagnosis. It does not modify Binance, does not affect Live, and does not make real
+Testnet order readiness safe. Before any real Testnet lifecycle test, rely on
+`verify_testnet_order_readiness.py`, which checks the actual Binance REST account rather than this
+flat profile. Do not bypass large Testnet inventory by loosening RiskEngine position limits.
+
 Start and stop dry-run daemon:
 
 ```powershell
@@ -375,8 +399,8 @@ approves. Set it to `true` only when you deliberately want real Binance Spot Tes
 The runtime uses `AccountPositionService` to read Binance Spot Testnet account balances through
 `broker.get_account()`, parse BTC/ETH/USDT balances, estimate position value from latest prices, and
 produce explicit `RuntimeAccountState` / `RuntimePositionState` snapshots. Unknown or simulated
-values are labeled with `source=unknown` or `source=simulated_default`; dry-run balances are not
-presented as real account data.
+values are labeled with `source=unknown`, `source=simulated_default`, or
+`source=dry_run_flat_profile`; dry-run balances are not presented as real account data.
 
 Dry-run may continue with simulated defaults, but real Testnet order paths require Testnet mode,
 Live disabled, DataQualityGate safe state, account and position state `OK`, user stream available,

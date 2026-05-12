@@ -68,6 +68,7 @@ async def build_readiness_report(settings: Settings | None = None) -> dict[str, 
             broker=broker,
             dry_run=settings.trading_dry_run,
             order_execution_enabled=settings.order_execution_enabled,
+            allow_dry_run_flat_profile=False,
         )
         account_snapshot = await service.refresh_all(
             settings.symbols.enabled_symbols,

@@ -7,7 +7,23 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-FORBIDDEN_ORDER_FIELDS = {"place_order", "quantity", "price", "client_order_id", "order_id"}
+FORBIDDEN_ORDER_FIELDS = {
+    "broker",
+    "client_order_id",
+    "execute_order",
+    "new_order",
+    "order",
+    "order_id",
+    "order_side",
+    "order_type",
+    "place_order",
+    "price",
+    "quantity",
+    "stop_loss",
+    "stop_price",
+    "take_profit",
+}
+FORBIDDEN_ORDER_TEXT_TERMS = FORBIDDEN_ORDER_FIELDS - {"order"}
 REQUIRED_BLOCKED_ACTIONS = {"MARTINGALE", "LEVERAGE", "SHORT"}
 
 
@@ -73,6 +89,13 @@ class SymbolPermissionRule(BaseModel):
     def uppercase_symbol(cls, value: str) -> str:
         return value.upper()
 
+    @field_validator("permission", mode="before")
+    @classmethod
+    def normalize_permission(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip().lower() == "observe":
+            return "observe_only"
+        return value
+
 
 class StrategyPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -100,6 +123,21 @@ class StrategyPlan(BaseModel):
     @classmethod
     def symbols_upper(cls, value: list[str]) -> list[str]:
         return [item.upper() for item in value]
+
+    @field_validator("allowed_actions", "blocked_actions", mode="before")
+    @classmethod
+    def normalize_action_terms(cls, value: object) -> object:
+        if not isinstance(value, list):
+            return value
+        normalized: list[object] = []
+        for item in value:
+            if isinstance(item, str):
+                lowered = item.strip().lower()
+                if lowered == "hold_only":
+                    normalized.append("HOLD")
+                    continue
+            normalized.append(item)
+        return normalized
 
     @model_validator(mode="after")
     def validate_plan(self) -> StrategyPlan:
@@ -146,11 +184,28 @@ class StrategyPlanUpdate(BaseModel):
 
 
 def _validate_no_order_fields(payload: dict[str, object]) -> None:
-    rendered = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).lower()
-    for field_name in FORBIDDEN_ORDER_FIELDS:
-        if field_name in rendered:
-            msg = f"Strategy plan must not contain order field: {field_name}"
-            raise ValueError(msg)
+    _validate_no_order_fields_recursive(payload)
+
+
+def _validate_no_order_fields_recursive(payload: object) -> None:
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            key_name = str(key).lower()
+            if key_name in FORBIDDEN_ORDER_FIELDS:
+                msg = f"Strategy plan must not contain order field: {key_name}"
+                raise ValueError(msg)
+            _validate_no_order_fields_recursive(value)
+        return
+    if isinstance(payload, list):
+        for item in payload:
+            _validate_no_order_fields_recursive(item)
+        return
+    if isinstance(payload, str):
+        rendered = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).lower()
+        for field_name in FORBIDDEN_ORDER_TEXT_TERMS:
+            if field_name in rendered:
+                msg = f"Strategy plan must not contain order field: {field_name}"
+                raise ValueError(msg)
 
 
 def _validate_blocked_actions(blocked_actions: list[str]) -> None:

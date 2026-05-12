@@ -55,6 +55,19 @@ def test_runtime_health_contains_account_position_status() -> None:
     assert health["account_position_status"]["account_source"] == "simulated_default"
 
 
+def test_runtime_data_quality_uses_current_last_kline_time() -> None:
+    daemon = TradingDaemon(
+        settings=load_settings(),
+        session_factory=_factory(),
+        broker=FakeBroker(),
+    )
+    daemon.last_rest_poll_ok_at = datetime.now(UTC)
+    daemon.last_kline_time = datetime.now(UTC)
+    snapshot = daemon._evaluate_data_quality_runtime(active_strategy_plan=None)
+    assert snapshot.last_kline_time is not None
+    assert "KLINE_STALENESS:LATEST_KLINE_TIMESTAMP_IS_MISSING" not in snapshot.reason_codes
+
+
 @pytest.mark.asyncio
 async def test_risk_uses_latest_account_state_not_only_hardcoded_1000() -> None:
     factory = _factory()

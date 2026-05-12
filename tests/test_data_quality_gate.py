@@ -38,6 +38,19 @@ def test_stale_kline_blocks_signal_review() -> None:
     assert snapshot.safe_for_signal_review is False
 
 
+def test_present_last_kline_time_does_not_report_missing_timestamp() -> None:
+    snapshot = DataQualityGate(load_settings()).evaluate_runtime_health(**_healthy_kwargs())
+    assert "KLINE_STALENESS:LATEST_KLINE_TIMESTAMP_IS_MISSING" not in snapshot.reason_codes
+
+
+def test_missing_last_kline_time_reports_accurate_block() -> None:
+    kwargs = _healthy_kwargs() | {"last_kline_time": None}
+    snapshot = DataQualityGate(load_settings()).evaluate_runtime_health(**kwargs)
+    assert "KLINE_STALENESS:LATEST_KLINE_TIMESTAMP_IS_MISSING" in snapshot.reason_codes
+    assert snapshot.safe_for_signal_review is False
+    assert snapshot.safe_for_order is False
+
+
 def test_nan_indicator_blocks_signal_review() -> None:
     kwargs = _healthy_kwargs() | {"indicator_nan_count": 1}
     snapshot = DataQualityGate(load_settings()).evaluate_runtime_health(**kwargs)

@@ -15,8 +15,10 @@ from config.settings import load_settings
 class FakeBroker(Broker):
     def __init__(self, *, fail: bool = False):
         self.fail = fail
+        self.account_called = False
 
     async def get_account(self):
+        self.account_called = True
         if self.fail:
             raise RuntimeError("account unavailable")
         return {
@@ -48,6 +50,16 @@ def _settings_with_keys():
         update={
             "binance_testnet_api_key": SecretStr("test-key"),
             "binance_testnet_api_secret": SecretStr("test-secret"),
+        }
+    )
+
+
+def _flat_settings():
+    return _settings_with_keys().model_copy(
+        update={
+            "dry_run_account_profile": "flat",
+            "dry_run_equity_usdt": 100000,
+            "dry_run_available_usdt": 100000,
         }
     )
 
@@ -124,3 +136,59 @@ async def test_account_position_snapshot_does_not_leak_secret_strings() -> None:
     rendered = json.dumps(snapshot.model_dump(mode="json"))
     assert "test-key" not in rendered
     assert "test-secret" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_dry_run_flat_profile_uses_zero_positions_without_broker_account_call() -> None:
+    broker = FakeBroker()
+    service = AccountPositionService(
+        settings=_flat_settings(),
+        broker=broker,
+        dry_run=True,
+        order_execution_enabled=False,
+    )
+    snapshot = await service.refresh_all(
+        ["BTCUSDT", "ETHUSDT"],
+        {"BTCUSDT": Decimal("100000"), "ETHUSDT": Decimal("2000")},
+    )
+    assert broker.account_called is False
+    assert snapshot.source == "dry_run_flat_profile"
+    assert snapshot.account.source == "dry_run_flat_profile"
+    assert snapshot.account.equity_usdt == Decimal("100000")
+    assert snapshot.account.available_usdt == Decimal("100000")
+    assert snapshot.account.total_position_pct == 0
+    assert all(position.source == "dry_run_flat_profile" for position in snapshot.positions)
+    assert all(position.side == "FLAT" for position in snapshot.positions)
+    assert all(position.quantity == 0 for position in snapshot.positions)
+    assert all(position.position_pct == 0 for position in snapshot.positions)
+    assert snapshot.safe_for_real_order is False
+
+
+@pytest.mark.asyncio
+async def test_flat_profile_does_not_apply_when_real_order_path_is_enabled() -> None:
+    broker = FakeBroker()
+    service = AccountPositionService(
+        settings=_flat_settings(),
+        broker=broker,
+        dry_run=False,
+        order_execution_enabled=True,
+    )
+    snapshot = await service.refresh_all(["BTCUSDT"], {"BTCUSDT": Decimal("100000")})
+    assert broker.account_called is True
+    assert snapshot.source == "binance_rest"
+    assert snapshot.positions[0].position_pct > 0
+
+
+@pytest.mark.asyncio
+async def test_readiness_can_disable_flat_profile_even_when_configured() -> None:
+    broker = FakeBroker()
+    service = AccountPositionService(
+        settings=_flat_settings(),
+        broker=broker,
+        dry_run=True,
+        order_execution_enabled=False,
+        allow_dry_run_flat_profile=False,
+    )
+    snapshot = await service.refresh_all(["BTCUSDT"], {"BTCUSDT": Decimal("100000")})
+    assert broker.account_called is True
+    assert snapshot.source == "binance_rest"

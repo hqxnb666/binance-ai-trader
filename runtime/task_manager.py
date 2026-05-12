@@ -101,6 +101,7 @@ class RuntimeTaskManager:
                 },
                 "data_quality_status": self._stopped_data_quality_status(),
                 "account_position_status": {
+                    "account_profile": self.settings.dry_run_account_profile,
                     "account_status": "UNKNOWN",
                     "account_source": "unknown",
                     "safe_for_real_order": False,
@@ -181,8 +182,11 @@ class RuntimeTaskManager:
         return snapshot.model_dump(mode="json")
 
     def latest_data_quality(self) -> dict[str, Any]:
-        if self.daemon is not None and self.daemon.latest_data_quality_snapshot is not None:
-            return self.daemon.latest_data_quality_snapshot.model_dump(mode="json")
+        if self.daemon is not None:
+            snapshot = self.daemon._evaluate_data_quality_runtime(
+                active_strategy_plan=self.daemon.active_strategy_plan
+            )
+            return snapshot.model_dump(mode="json")
         return {"status": "NO_DATA_QUALITY_SNAPSHOT"}
 
     async def run_shadow_evaluation(self) -> dict[str, Any]:

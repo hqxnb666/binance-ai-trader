@@ -531,6 +531,10 @@ def runtime_diagnostic_snapshot(
         risk_decisions=risk_decisions_payload if isinstance(risk_decisions_payload, list) else [],
         ai_reviews=ai_reviews_payload if isinstance(ai_reviews_payload, list) else [],
     )
+    account_profile_payload = _account_profile_payload(
+        settings=settings,
+        runtime_health=runtime_health_payload,
+    )
 
     snapshot = {
         "schema_version": "diagnostic_snapshot_v1",
@@ -540,6 +544,7 @@ def runtime_diagnostic_snapshot(
             "Read-only diagnostic snapshot. No order placement, no config mutation, no secrets."
         ),
         "runtime_health": runtime_health_payload,
+        "account_profile": account_profile_payload,
         "safe_config": safe_config_payload,
         "status": status_payload,
         "strategy_config": strategy_config_payload,
@@ -560,6 +565,7 @@ def runtime_diagnostic_snapshot(
         "blocking_attribution": blocking_attribution,
         "diagnostic_summary": _diagnostic_summary(
             active_strategy_plan=active_plan_payload,
+            account_profile=account_profile_payload,
             data_quality=data_quality_payload,
             readiness=readiness_payload,
             blocking_attribution=blocking_attribution,
@@ -961,6 +967,7 @@ def _blocking_attribution(
 def _diagnostic_summary(
     *,
     active_strategy_plan: Any,
+    account_profile: Any,
     data_quality: Any,
     readiness: Any,
     blocking_attribution: dict[str, int],
@@ -983,6 +990,10 @@ def _diagnostic_summary(
             primary_blockers.append("ACTIVE_STRATEGY_PLAN_NO_TRADE")
         if plan and plan.get("requires_human_review"):
             primary_blockers.append("ACTIVE_STRATEGY_PLAN_REQUIRES_HUMAN_REVIEW")
+    if isinstance(account_profile, dict):
+        notes.extend(account_profile.get("notes", []) or [])
+        if account_profile.get("shadow_position_polluted"):
+            primary_blockers.append("TESTNET_POSITION_POLLUTION")
     if blocking_attribution.get("would_place_order", 0) == 0:
         notes.append("No WOULD_PLACE_ORDER decisions in the selected shadow sample.")
     if errors:
@@ -992,6 +1003,51 @@ def _diagnostic_summary(
     return {
         "primary_blockers": sorted(set(primary_blockers)),
         "counts": counts,
+        "notes": notes,
+    }
+
+
+def _account_profile_payload(
+    *,
+    settings: Settings,
+    runtime_health: Any,
+) -> dict[str, object]:
+    health = _dict_or_empty(runtime_health)
+    account_position = _dict_or_empty(health.get("account_position_status"))
+    profile = str(account_position.get("account_profile") or settings.dry_run_account_profile)
+    source = str(account_position.get("account_source") or "unknown")
+    notes: list[str] = []
+    positions = _list_or_empty(account_position.get("positions"))
+    shadow_polluted = False
+    if profile == "flat" or source == "dry_run_flat_profile":
+        notes.append(
+            "Current dry-run/shadow uses a simulated flat account. This is for observation only "
+            "and does not apply to real Testnet order readiness."
+        )
+    else:
+        max_symbol_pct = settings.risk_config.max_position_pct_per_symbol
+        polluted_positions = [
+            position
+            for position in positions
+            if isinstance(position, dict)
+            and _float_or_zero(position.get("position_pct")) > max_symbol_pct
+        ]
+        if source == "binance_rest" and polluted_positions:
+            shadow_polluted = True
+            symbols = ", ".join(str(item.get("symbol")) for item in polluted_positions[:3])
+            notes.append(
+                "Current dry-run/shadow uses Binance Testnet REST account positions. "
+                f"{symbols} position_pct exceeds max_position_pct_per_symbol={max_symbol_pct}; "
+                "Shadow results may be dominated by position-limit rejections."
+            )
+    return {
+        "profile": profile,
+        "source": source,
+        "dry_run": health.get("dry_run", settings.trading_dry_run),
+        "order_execution_enabled": health.get(
+            "order_execution_enabled", settings.order_execution_enabled
+        ),
+        "shadow_position_polluted": shadow_polluted,
         "notes": notes,
     }
 
@@ -1145,6 +1201,13 @@ def _dict_or_empty(value: Any) -> dict[str, Any]:
 
 def _list_or_empty(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _float_or_zero(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _count_values(rows: list[Any], key: str) -> dict[str, int]:
